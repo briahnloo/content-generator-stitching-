@@ -86,12 +86,13 @@ class StitcherService:
     def _process_clip(
         self,
         video: Video,
-        caption: str,
+        caption: str,  # Currently unused - captions disabled
         output_path: Path,
         temp_dir: Path,
     ) -> bool:
         """
-        Process a single clip: scale, crop, add caption, limit duration.
+        Process a single clip: scale, crop, limit duration.
+        Note: Captions are currently disabled.
         Returns True on success.
         """
         if not video.local_path or not Path(video.local_path).exists():
@@ -108,18 +109,8 @@ class StitcherService:
             f"fps={self.fps}",
         ]
 
-        # Add caption if provided
-        if caption and caption.strip():
-            escaped_caption = self._escape_text(caption)
-            filters.append(
-                f"drawtext=text='{escaped_caption}':"
-                f"fontsize=48:"
-                f"fontcolor=white:"
-                f"borderw=3:"
-                f"bordercolor=black:"
-                f"x=(w-text_w)/2:"
-                f"y=h-th-100"
-            )
+        # Captions disabled - raw video only
+        # TODO: Re-enable captions if needed in the future
 
         filter_string = ",".join(filters)
 
@@ -308,22 +299,13 @@ class StitcherService:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             clip_paths = []
-            total_steps = len(videos) + 3  # clips + title + end + concat
+            total_steps = len(videos) + 1  # clips + concat (no title/end cards)
 
             try:
-                # Create title card
-                if progress_callback:
-                    progress_callback(1, total_steps, "Creating title card")
-
-                if compilation.hook:
-                    title_path = temp_path / "title.mp4"
-                    if self._create_title_card(compilation.hook, title_path):
-                        clip_paths.append(title_path)
-
-                # Process each clip
+                # Process each clip (no black screen hook - start with content immediately)
                 for i, video in enumerate(videos):
                     if progress_callback:
-                        progress_callback(i + 2, total_steps, f"Processing clip {i+1}")
+                        progress_callback(i + 1, total_steps, f"Processing clip {i+1}")
 
                     clip_path = temp_path / f"clip_{i:03d}.mp4"
 
@@ -337,16 +319,9 @@ class StitcherService:
                     else:
                         logger.warning(f"Failed to process clip {i} ({video.id})")
 
-                # Create end card
-                if progress_callback:
-                    progress_callback(total_steps - 1, total_steps, "Creating end card")
+                # No end card - keep it clean and fast-paced
 
-                if compilation.end_card:
-                    end_path = temp_path / "end.mp4"
-                    if self._create_title_card(compilation.end_card, end_path, 2.0):
-                        clip_paths.append(end_path)
-
-                if len(clip_paths) < 2:
+                if len(clip_paths) < 1:
                     logger.error("Not enough clips processed successfully")
                     compilation.error = "Not enough clips processed"
                     compilation.status = CompilationStatus.PENDING

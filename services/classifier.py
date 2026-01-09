@@ -14,39 +14,50 @@ from config.settings import settings, categories_config
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are a content classifier for short-form videos. Categorize videos into exactly one of these categories:
+SYSTEM_PROMPT = """You are a strict content classifier for short-form viral video compilations. Your job is to identify ONLY genuinely funny fails or comedy content.
 
-1. fails - accidents, mishaps, things going wrong
-2. satisfying - oddly satisfying, ASMR, smooth/perfect actions
-3. wholesome - heartwarming, feel-good, emotional positive moments
-4. comedy - funny skits, humor, pranks, jokes
-5. skills - impressive talents, amazing abilities, pro-level performance
-6. animals - pets, wildlife, cute animal moments
-7. food - cooking, eating, recipes, food content
-8. drama - confrontations, arguments, public freakouts, exposed moments
+ACCEPTED CATEGORIES (only use these):
+1. fails - accidents, mishaps, things going wrong, instant regret, people falling, crashes, fails
+2. comedy - funny skits, humor, pranks, jokes, memes, funny reactions, comedic moments
 
-Analyze the video description and hashtags to determine the most appropriate category.
+REJECTED CONTENT (use "reject" category for these):
+- Dancing or choreography of any kind
+- People posing, modeling, or showing off outfits
+- Thirst traps or attractive people just existing on camera
+- Advertisements, product promotions, sponsored content
+- Lip syncing or singing
+- Beauty, makeup, skincare, fashion content
+- Lifestyle vlogs, routines, "day in my life"
+- Relationship content, couples content
+- Motivational or inspirational content
+- Music videos or performances
 
 Respond with JSON only:
-{"category": "category_name", "confidence": 0.0-1.0, "reasoning": "brief explanation"}
+{"category": "fails|comedy|reject", "confidence": 0.0-1.0, "reasoning": "brief explanation"}
 
 Rules:
-- confidence should be 0.0-1.0 based on how certain you are
-- Use 0.7+ for clear matches
-- Use 0.3-0.7 for moderate confidence
-- Use <0.3 only if genuinely ambiguous
-- If multiple categories could apply, pick the strongest match"""
+- ONLY accept content that is genuinely FUNNY or shows a FAIL
+- Use "reject" for anything that doesn't fit fails or comedy
+- Be STRICT - when in doubt, reject
+- Dancing = ALWAYS reject, no exceptions
+- Ads/promos = ALWAYS reject
+- People just looking attractive = ALWAYS reject
+- confidence 0.7+ for clear fails/comedy
+- confidence 0.3-0.7 for moderate
+- Use "reject" with high confidence for unwanted content"""
 
 
 class ClassifierService:
-    """Classifies videos into categories using GPT-4o-mini."""
+    """Classifies videos into fails/comedy categories, rejecting other content."""
+
+    # Only accept these categories for compilations
+    ACCEPTED_CATEGORIES = {"fails", "comedy"}
 
     def __init__(self, db: Database):
         """Initialize classifier service."""
         self.db = db
         self._client: Optional[OpenAI] = None
         self.model = settings.OPENAI_MODEL
-        self.valid_categories = set(categories_config.get_category_names())
 
     @property
     def client(self) -> OpenAI:
@@ -89,11 +100,14 @@ class ClassifierService:
             confidence = float(data.get("confidence", 0))
             reasoning = data.get("reasoning", "")
 
-            # Validate category
-            if category not in self.valid_categories:
-                logger.warning(f"Invalid category '{category}', defaulting to comedy")
-                category = "comedy"
-                confidence = 0.2
+            # Handle reject category
+            if category == "reject":
+                return "reject", confidence, reasoning
+
+            # Validate category - only accept fails or comedy
+            if category not in self.ACCEPTED_CATEGORIES:
+                logger.warning(f"Invalid category '{category}', treating as reject")
+                return "reject", 0.8, f"Invalid category: {category}"
 
             # Clamp confidence
             confidence = max(0.0, min(1.0, confidence))
@@ -102,7 +116,7 @@ class ClassifierService:
 
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             logger.warning(f"Failed to parse classification response: {e}")
-            return "comedy", 0.1, "Parse error"
+            return "reject", 0.5, f"Parse error: {e}"
 
     def classify(self, video: Video) -> Tuple[str, float, str]:
         """
@@ -140,7 +154,8 @@ class ClassifierService:
     ) -> bool:
         """
         Classify a video and update the database.
-        Returns True if classified (confidence >= threshold), False if skipped.
+        Returns True if classified as fails/comedy with sufficient confidence.
+        Returns False if rejected or low confidence.
         """
         if min_confidence is None:
             min_confidence = settings.MIN_CLASSIFICATION_CONFIDENCE
@@ -152,17 +167,28 @@ class ClassifierService:
             video.category_confidence = confidence
             video.classification_reasoning = reasoning
 
-            if confidence >= min_confidence:
-                video.status = VideoStatus.CLASSIFIED
-                logger.info(f"Video {video.id} classified as {category} ({confidence:.2f})")
-            else:
+            # Reject category = skip the video
+            if category == "reject":
+                video.status = VideoStatus.SKIPPED
+                logger.info(f"Video {video.id} rejected: {reasoning}")
+                video.error = ""
+                self.db.update_video(video)
+                return False
+
+            # Low confidence = skip
+            if confidence < min_confidence:
                 video.status = VideoStatus.SKIPPED
                 logger.info(f"Video {video.id} skipped (low confidence: {confidence:.2f})")
+                video.error = ""
+                self.db.update_video(video)
+                return False
 
+            # Accepted: fails or comedy with good confidence
+            video.status = VideoStatus.CLASSIFIED
+            logger.info(f"Video {video.id} classified as {category} ({confidence:.2f})")
             video.error = ""
             self.db.update_video(video)
-
-            return confidence >= min_confidence
+            return True
 
         except Exception as e:
             video.error = str(e)

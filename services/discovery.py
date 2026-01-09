@@ -21,6 +21,43 @@ class DiscoveryService:
 
     ACTOR_ID = "clockworks/tiktok-scraper"
 
+    # Blacklist keywords for content we don't want (dance, thirst traps, ads)
+    BLACKLIST_KEYWORDS = [
+        # Dance content
+        "dance", "dancing", "dancer", "choreography", "choreo",
+        "twerk", "twerking", "shuffle", "shuffling",
+        "tutorial dance", "dance challenge", "dancechallenge",
+        # Thirst trap / model content
+        "thirst", "thirsttrap", "hot girl", "hotgirl", "baddie",
+        "model", "modeling", "photoshoot", "bikini", "swimsuit",
+        "outfit check", "outfitcheck", "ootd", "grwm", "getreadywithme",
+        "fit check", "fitcheck", "glow up", "glowup",
+        # Advertisement / promotional
+        "ad", "sponsored", "sponsor", "promo", "promotion",
+        "discount", "sale", "buy now", "link in bio", "linkinbio",
+        "shop now", "shopnow", "use code", "usecode", "coupon",
+        "affiliate", "partnership", "collab", "brand deal",
+        "review", "unboxing", "haul",
+        # Music / lip sync focused
+        "lip sync", "lipsync", "duet", "singing", "singer",
+        "cover song", "coversong",
+        # Lifestyle / beauty focused
+        "makeup", "skincare", "beauty", "fashion", "style",
+        "aesthetic", "vlog", "dayinmylife", "routine",
+    ]
+
+    # Blacklist hashtags (without #)
+    BLACKLIST_HASHTAGS = [
+        "dance", "dancing", "dancer", "choreography",
+        "twerk", "shuffle", "dancechallenge",
+        "thirsttrap", "hotgirl", "baddie", "model",
+        "ootd", "grwm", "fitcheck", "outfitcheck",
+        "ad", "sponsored", "promo", "linkinbio",
+        "makeup", "skincare", "beauty", "fashion",
+        "aesthetic", "fyp", "foryou",  # fyp/foryou are too generic
+        "lipsync", "duet", "singing",
+    ]
+
     def __init__(self, db: Database):
         """Initialize discovery service."""
         self.db = db
@@ -46,6 +83,29 @@ class DiscoveryService:
             logger.debug(f"Initializing Apify client with token (length: {len(token)})")
             self._client = ApifyClient(token)
         return self._client
+
+    def _is_blacklisted(self, description: str, hashtags: List[str]) -> bool:
+        """
+        Check if video content matches blacklist criteria.
+        Returns True if the video should be filtered out.
+        """
+        # Normalize description to lowercase
+        desc_lower = description.lower() if description else ""
+
+        # Check description for blacklisted keywords
+        for keyword in self.BLACKLIST_KEYWORDS:
+            if keyword.lower() in desc_lower:
+                logger.debug(f"Blacklisted by keyword: '{keyword}'")
+                return True
+
+        # Check hashtags against blacklist
+        for tag in hashtags:
+            tag_clean = tag.lstrip("#").lower()
+            if tag_clean in self.BLACKLIST_HASHTAGS:
+                logger.debug(f"Blacklisted by hashtag: '#{tag_clean}'")
+                return True
+
+        return False
 
     def _generate_video_id(self, tiktok_id: str, url: str) -> str:
         """Generate a unique internal ID for a video."""
@@ -84,6 +144,14 @@ class DiscoveryService:
                 elif isinstance(tag, str):
                     hashtags.append(tag)
             hashtags = [f"#{h}" if not h.startswith("#") else h for h in hashtags if h]
+
+            # Get description for blacklist check
+            description = item.get("text", "") or item.get("description", "")
+
+            # Filter out blacklisted content (dance, ads, thirst traps)
+            if self._is_blacklisted(description, hashtags):
+                logger.debug(f"Filtered out blacklisted video: {tiktok_id}")
+                return None
 
             video_id = self._generate_video_id(tiktok_id, url)
 
@@ -177,10 +245,21 @@ class DiscoveryService:
 
     def discover_trending(self, limit: int = 30) -> Tuple[List[Video], int]:
         """
-        Fetch trending videos.
+        Fetch trending videos focused on fails and comedy content.
+        The Apify actor requires at least one input type (hashtags, postURLs, etc.)
+        so we use fails/comedy hashtags to get viral funny content.
         Returns (new_videos, skipped_duplicates).
         """
+        # Use fails/comedy hashtags to get funny viral content
+        # Avoiding generic tags like fyp/foryou which return too much dance content
+        comedy_fails_hashtags = [
+            "fail", "fails", "epicfail",
+            "funny", "funnyvideos", "comedy",
+            "trynottolaugh", "memes", "humor",
+            "instant_regret", "whatcouldgowrong",
+        ]
         run_input = {
+            "hashtags": comedy_fails_hashtags,
             "resultsPerPage": min(limit, 100),
             "shouldDownloadVideos": False,
             "shouldDownloadCovers": False,
@@ -227,9 +306,9 @@ class DiscoveryService:
 
     def discover_default(self, limit: int = 50) -> Tuple[List[Video], int]:
         """
-        Discover videos using default hashtags from config.
+        Discover trending videos (most viral/liked).
+        Uses trending feed instead of hashtags for higher quality videos.
         Returns (new_videos, total_skipped).
         """
-        hashtags = settings.DISCOVERY_HASHTAGS
-        limit_per = max(1, limit // len(hashtags)) if hashtags else limit
-        return self.discover_from_hashtags(hashtags, limit_per)
+        logger.info(f"Discovering trending videos (limit={limit})")
+        return self.discover_trending(limit)

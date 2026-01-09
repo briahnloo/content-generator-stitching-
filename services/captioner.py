@@ -1,146 +1,35 @@
 """
-Captioner service for generating text overlays using GPT-4o-mini.
+Captioner service for generating text overlays.
+Uses simple countdown format: "Top Viral Moments: 5, 4, 3, 2, 1"
 """
 
-import json
 import logging
-from typing import Optional, List
-
-from openai import OpenAI
+from typing import List
 
 from core.models import Compilation, Video
 from core.database import Database
-from config.settings import settings, categories_config
+from config.settings import categories_config
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are a viral video caption writer. Generate engaging text overlays for a compilation video.
-
-Your captions should be:
-- Short and punchy (2-8 words max per caption)
-- Engaging and attention-grabbing
-- Match the energy of the category
-- Use emojis sparingly but effectively
-- Encourage watching to the end
-
-Respond with JSON only:
-{
-  "hook": "Opening hook (2-5 words) to grab attention",
-  "clip_captions": ["Caption for clip 1", "Caption for clip 2", ...],
-  "transitions": ["Optional transition text", "", "Another transition", ...],
-  "end_card": "Follow call-to-action (3-6 words)"
-}
-
-Rules:
-- hook: Very short, creates curiosity or excitement
-- clip_captions: One per video, describes what's happening or adds humor
-- transitions: Can be empty strings, used between notable clips
-- end_card: Encourage engagement (follow, like, share)"""
-
 
 class CaptionerService:
-    """Generates captions for compilations using GPT-4o-mini."""
+    """Generates simple countdown captions for compilations."""
 
     def __init__(self, db: Database):
         """Initialize captioner service."""
         self.db = db
-        self._client: Optional[OpenAI] = None
-        self.model = settings.OPENAI_MODEL
 
-    @property
-    def client(self) -> OpenAI:
-        """Lazy-load OpenAI client."""
-        if self._client is None:
-            if not settings.OPENAI_API_KEY:
-                raise ValueError("OPENAI_API_KEY is required for captioning")
-            self._client = OpenAI(api_key=settings.OPENAI_API_KEY)
-        return self._client
-
-    def _build_user_prompt(
-        self, compilation: Compilation, videos: List[Video]
-    ) -> str:
-        """Build the user prompt for caption generation."""
-        category_config = categories_config.get_category(compilation.category)
-        category_name = category_config.get("name", compilation.category.title())
-
-        clip_descriptions = []
-        for i, video in enumerate(videos):
-            desc = video.description[:100] if video.description else "No description"
-            clip_descriptions.append(f"Clip {i+1}: {desc}")
-
-        return f"""Generate captions for a {category_name} compilation titled: "{compilation.title}"
-
-Number of clips: {len(videos)}
-
-Clip descriptions:
-{chr(10).join(clip_descriptions)}
-
-Generate engaging captions that match the {compilation.category} category style."""
-
-    def _parse_response(
-        self, response_text: str, num_clips: int
-    ) -> dict:
-        """Parse GPT response into caption structure."""
-        try:
-            # Clean up response
-            text = response_text.strip()
-            if text.startswith("```"):
-                text = text.split("```")[1]
-                if text.startswith("json"):
-                    text = text[4:]
-                text = text.strip()
-
-            data = json.loads(text)
-
-            # Validate and normalize
-            hook = str(data.get("hook", "Check this out"))[:50]
-            end_card = str(data.get("end_card", "Follow for more"))[:50]
-
-            # Ensure correct number of clip captions
-            clip_captions = data.get("clip_captions", [])
-            if not isinstance(clip_captions, list):
-                clip_captions = []
-
-            # Pad or trim to match clip count
-            while len(clip_captions) < num_clips:
-                clip_captions.append("")
-            clip_captions = clip_captions[:num_clips]
-
-            # Normalize transitions
-            transitions = data.get("transitions", [])
-            if not isinstance(transitions, list):
-                transitions = []
-
-            # Pad transitions to match clips
-            while len(transitions) < num_clips:
-                transitions.append("")
-            transitions = transitions[:num_clips]
-
-            return {
-                "hook": hook,
-                "clip_captions": clip_captions,
-                "transitions": transitions,
-                "end_card": end_card,
-            }
-
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
-            logger.warning(f"Failed to parse caption response: {e}")
-            # Return defaults
-            return {
-                "hook": "Watch this",
-                "clip_captions": [""] * num_clips,
-                "transitions": [""] * num_clips,
-                "end_card": "Follow for more",
-            }
-
-    def generate_captions(
-        self, compilation: Compilation
-    ) -> dict:
+    def generate_captions(self, compilation: Compilation) -> dict:
         """
-        Generate captions for a compilation.
+        Generate simple countdown captions for a compilation.
         Returns dict with hook, clip_captions, transitions, end_card.
+
+        Format: First clip shows "Top Viral Moments: 5, 4, 3, 2, 1"
+        No per-clip captions, no end card.
         """
         videos = self.db.get_videos_for_compilation(compilation.id)
+        num_clips = len(videos)
 
         if not videos:
             logger.warning(f"No videos found for compilation {compilation.id}")
@@ -151,28 +40,24 @@ Generate engaging captions that match the {compilation.category} category style.
                 "end_card": "",
             }
 
-        user_prompt = self._build_user_prompt(compilation, videos)
+        # Generate countdown format: "category moments:\n5:\n4:\n3:\n2:\n1:"
+        category_config = categories_config.get_category(compilation.category)
+        category_name = category_config.get("name", compilation.category.title()).lower()
+        
+        countdown_lines = [f"{category_name} moments:"] + [f"{i}:" for i in range(num_clips, 0, -1)]
+        first_clip_caption = "\n".join(countdown_lines)
 
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.7,
-                max_tokens=500,
-            )
+        # Only first clip gets the caption, rest are empty
+        clip_captions = [first_clip_caption] + [""] * (num_clips - 1)
 
-            response_text = response.choices[0].message.content
-            captions = self._parse_response(response_text, len(videos))
+        logger.info(f"Generated countdown caption for compilation {compilation.id}: {first_clip_caption}")
 
-            logger.info(f"Generated captions for compilation {compilation.id}")
-            return captions
-
-        except Exception as e:
-            logger.error(f"Caption generation failed for {compilation.id}: {e}")
-            raise
+        return {
+            "hook": "",  # No hook (removed black screen)
+            "clip_captions": clip_captions,
+            "transitions": [""] * num_clips,
+            "end_card": "",  # No end card
+        }
 
     def generate_and_update(self, compilation: Compilation) -> bool:
         """
