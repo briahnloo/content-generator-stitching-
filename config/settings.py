@@ -83,6 +83,22 @@ class Settings:
     # OpenAI settings
     OPENAI_MODEL: str = _get_env("OPENAI_MODEL", "gpt-4o-mini")
 
+    # Encryption
+    CREDENTIALS_ENCRYPTION_KEY: str = _get_env("CREDENTIALS_ENCRYPTION_KEY", "")
+
+    # Auto-approval settings
+    AUTO_APPROVE_THRESHOLD: float = _get_env_float("AUTO_APPROVE_THRESHOLD", 0.75)
+    MIN_CONFIDENCE_FOR_UPLOAD: float = _get_env_float("MIN_CONFIDENCE_FOR_UPLOAD", 0.6)
+
+    # Rate limits
+    YOUTUBE_DAILY_LIMIT_PER_ACCOUNT: int = _get_env_int("YOUTUBE_DAILY_LIMIT_PER_ACCOUNT", 3)
+    TIKTOK_DAILY_LIMIT_PER_ACCOUNT: int = _get_env_int("TIKTOK_DAILY_LIMIT_PER_ACCOUNT", 5)
+
+    # Scheduler settings
+    SCHEDULER_ENABLED: bool = _get_env("SCHEDULER_ENABLED", "true").lower() == "true"
+    DISCOVERY_INTERVAL_HOURS: int = _get_env_int("DISCOVERY_INTERVAL_HOURS", 4)
+    UPLOAD_INTERVAL_MINUTES: int = _get_env_int("UPLOAD_INTERVAL_MINUTES", 15)
+
     @classmethod
     def ensure_directories(cls) -> None:
         """Create all required directories if they don't exist."""

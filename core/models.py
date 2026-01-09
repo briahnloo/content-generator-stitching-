@@ -31,6 +31,27 @@ class CompilationStatus(Enum):
     REJECTED = "rejected"      # Manually rejected
 
 
+class Platform(Enum):
+    """Supported upload platforms."""
+    YOUTUBE = "youtube"
+    TIKTOK = "tiktok"
+
+
+class ContentStrategy(Enum):
+    """Content strategy for accounts."""
+    FAILS = "fails"
+    COMEDY = "comedy"
+    MIXED = "mixed"
+
+
+class UploadStatus(Enum):
+    """Upload job status."""
+    PENDING = "pending"
+    UPLOADING = "uploading"
+    SUCCESS = "success"
+    FAILED = "failed"
+
+
 @dataclass
 class Video:
     """Represents a TikTok video in the pipeline."""
@@ -170,6 +191,10 @@ class Compilation:
     youtube_id: str = ""                 # YouTube video ID after upload
     credits_text: str = ""               # "@user1, @user2, ..."
 
+    # Auto-approval
+    auto_approved: bool = False          # Whether auto-approved by confidence
+    confidence_score: float = 0.0        # Average classification confidence
+
     # Captions (stored as JSON)
     hook: str = ""                       # Opening hook text
     clip_captions: List[str] = field(default_factory=list)
@@ -222,6 +247,8 @@ class Compilation:
             music_track=row.get("music_track", ""),
             youtube_id=row.get("youtube_id", ""),
             credits_text=row.get("credits_text", ""),
+            auto_approved=bool(row.get("auto_approved", False)),
+            confidence_score=row.get("confidence_score", 0.0),
             hook=row.get("hook", ""),
             clip_captions=clip_captions,
             transitions=transitions,
@@ -244,10 +271,215 @@ class Compilation:
             "music_track": self.music_track,
             "youtube_id": self.youtube_id,
             "credits_text": self.credits_text,
+            "auto_approved": int(self.auto_approved),
+            "confidence_score": self.confidence_score,
             "hook": self.hook,
             "clip_captions": self.clip_captions_json,
             "transitions": self.transitions_json,
             "end_card": self.end_card,
             "error": self.error,
+            "created_at": self.created_at.isoformat(),
+        }
+
+
+@dataclass
+class Account:
+    """Represents a platform account for uploading."""
+
+    id: str                              # UUID
+    platform: Platform                   # youtube | tiktok
+    name: str                            # Human-readable name
+    handle: str = ""                     # @username
+
+    # Content strategy
+    content_strategy: ContentStrategy = ContentStrategy.MIXED
+
+    # Credentials (encrypted JSON)
+    credentials_encrypted: str = ""
+
+    # Rate limiting
+    daily_upload_limit: int = 3
+    uploads_today: int = 0
+    last_upload_at: Optional[datetime] = None
+
+    # State
+    is_active: bool = True
+    error: str = ""
+
+    # Timestamps
+    created_at: datetime = field(default_factory=datetime.now)
+
+    @classmethod
+    def from_db_row(cls, row: dict) -> "Account":
+        """Create Account from database row."""
+        platform = Platform(row.get("platform", "youtube"))
+        content_strategy = ContentStrategy(row.get("content_strategy", "mixed"))
+
+        created_at = row.get("created_at")
+        if isinstance(created_at, str):
+            created_at = datetime.fromisoformat(created_at)
+        elif created_at is None:
+            created_at = datetime.now()
+
+        last_upload_at = row.get("last_upload_at")
+        if isinstance(last_upload_at, str) and last_upload_at:
+            last_upload_at = datetime.fromisoformat(last_upload_at)
+        else:
+            last_upload_at = None
+
+        return cls(
+            id=row["id"],
+            platform=platform,
+            name=row.get("name", ""),
+            handle=row.get("handle", ""),
+            content_strategy=content_strategy,
+            credentials_encrypted=row.get("credentials_encrypted", ""),
+            daily_upload_limit=row.get("daily_upload_limit", 3),
+            uploads_today=row.get("uploads_today", 0),
+            last_upload_at=last_upload_at,
+            is_active=bool(row.get("is_active", True)),
+            error=row.get("error", ""),
+            created_at=created_at,
+        )
+
+    def to_db_dict(self) -> dict:
+        """Convert to dictionary for database storage."""
+        return {
+            "id": self.id,
+            "platform": self.platform.value,
+            "name": self.name,
+            "handle": self.handle,
+            "content_strategy": self.content_strategy.value,
+            "credentials_encrypted": self.credentials_encrypted,
+            "daily_upload_limit": self.daily_upload_limit,
+            "uploads_today": self.uploads_today,
+            "last_upload_at": self.last_upload_at.isoformat() if self.last_upload_at else None,
+            "is_active": int(self.is_active),
+            "error": self.error,
+            "created_at": self.created_at.isoformat(),
+        }
+
+
+@dataclass
+class Upload:
+    """Represents an upload job for a compilation to a platform account."""
+
+    id: str                              # UUID
+    compilation_id: str                  # Foreign key to compilations
+    account_id: str                      # Foreign key to accounts
+    platform: Platform                   # youtube | tiktok
+
+    # Upload state
+    status: UploadStatus = UploadStatus.PENDING
+    platform_video_id: str = ""          # YouTube/TikTok video ID
+    privacy: str = "private"             # public | private | unlisted
+
+    # Scheduling
+    scheduled_at: Optional[datetime] = None
+    uploaded_at: Optional[datetime] = None
+
+    # Error tracking
+    error: str = ""
+    retry_count: int = 0
+
+    # Timestamps
+    created_at: datetime = field(default_factory=datetime.now)
+
+    @classmethod
+    def from_db_row(cls, row: dict) -> "Upload":
+        """Create Upload from database row."""
+        platform = Platform(row.get("platform", "youtube"))
+        status = UploadStatus(row.get("status", "pending"))
+
+        created_at = row.get("created_at")
+        if isinstance(created_at, str):
+            created_at = datetime.fromisoformat(created_at)
+        elif created_at is None:
+            created_at = datetime.now()
+
+        scheduled_at = row.get("scheduled_at")
+        if isinstance(scheduled_at, str) and scheduled_at:
+            scheduled_at = datetime.fromisoformat(scheduled_at)
+        else:
+            scheduled_at = None
+
+        uploaded_at = row.get("uploaded_at")
+        if isinstance(uploaded_at, str) and uploaded_at:
+            uploaded_at = datetime.fromisoformat(uploaded_at)
+        else:
+            uploaded_at = None
+
+        return cls(
+            id=row["id"],
+            compilation_id=row.get("compilation_id", ""),
+            account_id=row.get("account_id", ""),
+            platform=platform,
+            status=status,
+            platform_video_id=row.get("platform_video_id", ""),
+            privacy=row.get("privacy", "private"),
+            scheduled_at=scheduled_at,
+            uploaded_at=uploaded_at,
+            error=row.get("error", ""),
+            retry_count=row.get("retry_count", 0),
+            created_at=created_at,
+        )
+
+    def to_db_dict(self) -> dict:
+        """Convert to dictionary for database storage."""
+        return {
+            "id": self.id,
+            "compilation_id": self.compilation_id,
+            "account_id": self.account_id,
+            "platform": self.platform.value,
+            "status": self.status.value,
+            "platform_video_id": self.platform_video_id,
+            "privacy": self.privacy,
+            "scheduled_at": self.scheduled_at.isoformat() if self.scheduled_at else None,
+            "uploaded_at": self.uploaded_at.isoformat() if self.uploaded_at else None,
+            "error": self.error,
+            "retry_count": self.retry_count,
+            "created_at": self.created_at.isoformat(),
+        }
+
+
+@dataclass
+class RoutingRule:
+    """Defines content routing rules for accounts."""
+
+    id: str                              # UUID
+    account_id: str                      # Foreign key to accounts
+    category: str                        # fails | comedy
+    min_confidence: float = 0.7          # Minimum confidence to route
+    priority: int = 1                    # Higher = preferred
+
+    # Timestamps
+    created_at: datetime = field(default_factory=datetime.now)
+
+    @classmethod
+    def from_db_row(cls, row: dict) -> "RoutingRule":
+        """Create RoutingRule from database row."""
+        created_at = row.get("created_at")
+        if isinstance(created_at, str):
+            created_at = datetime.fromisoformat(created_at)
+        elif created_at is None:
+            created_at = datetime.now()
+
+        return cls(
+            id=row["id"],
+            account_id=row.get("account_id", ""),
+            category=row.get("category", ""),
+            min_confidence=row.get("min_confidence", 0.7),
+            priority=row.get("priority", 1),
+            created_at=created_at,
+        )
+
+    def to_db_dict(self) -> dict:
+        """Convert to dictionary for database storage."""
+        return {
+            "id": self.id,
+            "account_id": self.account_id,
+            "category": self.category,
+            "min_confidence": self.min_confidence,
+            "priority": self.priority,
             "created_at": self.created_at.isoformat(),
         }

@@ -12,8 +12,10 @@ from tqdm import tqdm
 
 from config.settings import settings
 from core.database import Database
-from core.models import CompilationStatus, VideoStatus
+from core.models import CompilationStatus, VideoStatus, Platform, ContentStrategy
 from pipeline import Pipeline
+from services.account_manager import AccountManager
+from services.upload_router import UploadRouter
 
 # Configure logging
 logging.basicConfig(
@@ -428,6 +430,396 @@ def list_compilations():
         if comp.youtube_id:
             click.echo(f"   YouTube: https://youtube.com/watch?v={comp.youtube_id}")
         click.echo()
+
+
+# =============================================================================
+# Account Management Commands
+# =============================================================================
+
+
+@cli.group()
+def account():
+    """Manage platform accounts."""
+    pass
+
+
+@account.command("add")
+@click.option("--platform", "-p", required=True, type=click.Choice(["youtube", "tiktok"]))
+@click.option("--name", "-n", required=True, help="Account name")
+@click.option("--strategy", "-s", default="mixed", type=click.Choice(["fails", "comedy", "mixed"]))
+@click.option("--handle", "-h", default="", help="@username handle")
+@click.option("--daily-limit", "-l", default=3, help="Daily upload limit")
+def account_add(platform: str, name: str, strategy: str, handle: str, daily_limit: int):
+    """Add a new platform account."""
+    db = Database(settings.DATABASE_PATH)
+    manager = AccountManager(db)
+
+    platform_enum = Platform.YOUTUBE if platform == "youtube" else Platform.TIKTOK
+    strategy_enum = ContentStrategy(strategy)
+
+    account = manager.create_account(
+        platform=platform_enum,
+        name=name,
+        strategy=strategy_enum,
+        handle=handle,
+        daily_limit=daily_limit,
+    )
+
+    click.echo(f"Created {platform} account: {account.name}")
+    click.echo(f"  ID: {account.id}")
+    click.echo(f"  Strategy: {strategy}")
+    click.echo(f"  Daily limit: {daily_limit}")
+    click.echo(f"\nNext: Set credentials with 'account auth {account.id}'")
+
+
+@account.command("list")
+@click.option("--platform", "-p", type=click.Choice(["youtube", "tiktok"]), default=None)
+@click.option("--all", "show_all", is_flag=True, help="Include inactive accounts")
+def account_list(platform: str, show_all: bool):
+    """List all accounts."""
+    db = Database(settings.DATABASE_PATH)
+    manager = AccountManager(db)
+
+    platform_enum = None
+    if platform:
+        platform_enum = Platform.YOUTUBE if platform == "youtube" else Platform.TIKTOK
+
+    accounts = manager.list_accounts(platform=platform_enum, active_only=not show_all)
+
+    if not accounts:
+        click.echo("No accounts found.")
+        return
+
+    click.echo(f"Accounts ({len(accounts)}):\n")
+
+    for acc in accounts:
+        status_icon = "✓" if acc.is_active else "✗"
+        creds_icon = "🔑" if acc.credentials_encrypted else "⚠️"
+
+        click.echo(f"{status_icon} {acc.id}: {acc.name} ({acc.platform.value})")
+        click.echo(f"   Strategy: {acc.content_strategy.value}")
+        click.echo(f"   Handle: {acc.handle or 'not set'}")
+        click.echo(f"   Uploads today: {acc.uploads_today}/{acc.daily_upload_limit}")
+        click.echo(f"   Credentials: {creds_icon} {'set' if acc.credentials_encrypted else 'NOT SET'}")
+        if acc.error:
+            click.echo(f"   Error: {acc.error}")
+        click.echo()
+
+
+@account.command("auth")
+@click.argument("account_id")
+@click.option("--client-id", prompt=True, help="OAuth Client ID")
+@click.option("--client-secret", prompt=True, hide_input=True, help="OAuth Client Secret")
+def account_auth(account_id: str, client_id: str, client_secret: str):
+    """Set up YouTube OAuth credentials for an account."""
+    db = Database(settings.DATABASE_PATH)
+    manager = AccountManager(db)
+
+    acc = manager.get_account(account_id)
+    if not acc:
+        click.echo(f"Account {account_id} not found.")
+        return
+
+    if acc.platform != Platform.YOUTUBE:
+        click.echo("OAuth flow is only for YouTube accounts.")
+        click.echo("For TikTok, use 'account set-cookies' command.")
+        return
+
+    click.echo("Starting YouTube OAuth flow...")
+    click.echo("A browser window will open for authentication.")
+
+    from services.youtube_uploader import YouTubeUploader
+    refresh_token = YouTubeUploader.run_oauth_flow(client_id, client_secret)
+
+    if refresh_token:
+        credentials = {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "refresh_token": refresh_token,
+        }
+
+        if manager.set_credentials(account_id, credentials):
+            click.echo(f"Credentials stored for {acc.name}")
+        else:
+            click.echo("Failed to store credentials.")
+    else:
+        click.echo("Authentication failed.")
+
+
+@account.command("set-cookies")
+@click.argument("account_id")
+@click.option("--browser", "-b", default="chrome", type=click.Choice(["chrome", "firefox", "edge"]))
+def account_set_cookies(account_id: str, browser: str):
+    """Extract and store TikTok cookies from browser."""
+    db = Database(settings.DATABASE_PATH)
+    manager = AccountManager(db)
+
+    acc = manager.get_account(account_id)
+    if not acc:
+        click.echo(f"Account {account_id} not found.")
+        return
+
+    if acc.platform != Platform.TIKTOK:
+        click.echo("Cookie extraction is only for TikTok accounts.")
+        return
+
+    click.echo(f"Extracting TikTok cookies from {browser}...")
+    click.echo("Make sure you're logged into TikTok in that browser.")
+
+    from services.tiktok_uploader import TikTokUploader
+    cookies = TikTokUploader.extract_cookies_from_browser(browser)
+
+    if cookies and TikTokUploader.validate_cookies(cookies):
+        credentials = {"cookies": cookies}
+        if manager.set_credentials(account_id, credentials):
+            click.echo(f"Cookies stored for {acc.name}")
+            click.echo(f"Found {len(cookies)} cookies.")
+        else:
+            click.echo("Failed to store cookies.")
+    else:
+        click.echo("Failed to extract valid cookies.")
+        click.echo("Make sure you're logged into TikTok.")
+
+
+@account.command("deactivate")
+@click.argument("account_id")
+def account_deactivate(account_id: str):
+    """Deactivate an account."""
+    db = Database(settings.DATABASE_PATH)
+    manager = AccountManager(db)
+
+    if manager.deactivate_account(account_id):
+        click.echo(f"Account {account_id} deactivated.")
+    else:
+        click.echo(f"Failed to deactivate account {account_id}.")
+
+
+@account.command("activate")
+@click.argument("account_id")
+def account_activate(account_id: str):
+    """Activate a deactivated account."""
+    db = Database(settings.DATABASE_PATH)
+    manager = AccountManager(db)
+
+    if manager.activate_account(account_id):
+        click.echo(f"Account {account_id} activated.")
+    else:
+        click.echo(f"Failed to activate account {account_id}.")
+
+
+@account.command("delete")
+@click.argument("account_id")
+@click.option("--confirm", is_flag=True, help="Confirm deletion")
+def account_delete(account_id: str, confirm: bool):
+    """Delete an account."""
+    if not confirm:
+        click.echo("Run with --confirm to delete the account.")
+        return
+
+    db = Database(settings.DATABASE_PATH)
+    manager = AccountManager(db)
+
+    if manager.delete_account(account_id):
+        click.echo(f"Account {account_id} deleted.")
+    else:
+        click.echo(f"Failed to delete account {account_id}.")
+
+
+# =============================================================================
+# Routing Rules Commands
+# =============================================================================
+
+
+@cli.group()
+def route():
+    """Manage content routing rules."""
+    pass
+
+
+@route.command("add")
+@click.argument("account_id")
+@click.option("--category", "-c", required=True, type=click.Choice(["fails", "comedy"]))
+@click.option("--min-confidence", "-m", default=0.7, help="Minimum confidence threshold")
+@click.option("--priority", "-p", default=1, help="Priority (higher = preferred)")
+def route_add(account_id: str, category: str, min_confidence: float, priority: int):
+    """Add a routing rule for an account."""
+    db = Database(settings.DATABASE_PATH)
+    manager = AccountManager(db)
+
+    rule = manager.add_routing_rule(
+        account_id=account_id,
+        category=category,
+        min_confidence=min_confidence,
+        priority=priority,
+    )
+
+    if rule:
+        click.echo(f"Added routing rule: {category} -> account {account_id}")
+        click.echo(f"  Min confidence: {min_confidence}")
+        click.echo(f"  Priority: {priority}")
+    else:
+        click.echo("Failed to add routing rule. Check account ID.")
+
+
+@route.command("list")
+def route_list():
+    """List all routing rules."""
+    db = Database(settings.DATABASE_PATH)
+    rules = db.get_all_routing_rules()
+
+    if not rules:
+        click.echo("No routing rules found.")
+        return
+
+    click.echo(f"Routing Rules ({len(rules)}):\n")
+
+    # Group by account
+    by_account = {}
+    for rule in rules:
+        if rule.account_id not in by_account:
+            by_account[rule.account_id] = []
+        by_account[rule.account_id].append(rule)
+
+    for account_id, account_rules in by_account.items():
+        acc = db.get_account(account_id)
+        name = acc.name if acc else account_id
+
+        click.echo(f"{name}:")
+        for rule in account_rules:
+            click.echo(f"  - {rule.category}: confidence >= {rule.min_confidence}, priority {rule.priority}")
+        click.echo()
+
+
+@route.command("delete")
+@click.argument("rule_id")
+def route_delete(rule_id: str):
+    """Delete a routing rule."""
+    db = Database(settings.DATABASE_PATH)
+    manager = AccountManager(db)
+
+    if manager.delete_routing_rule(rule_id):
+        click.echo(f"Routing rule {rule_id} deleted.")
+    else:
+        click.echo(f"Failed to delete routing rule {rule_id}.")
+
+
+# =============================================================================
+# Upload Queue Commands
+# =============================================================================
+
+
+@cli.group()
+def queue():
+    """Manage upload queue."""
+    pass
+
+
+@queue.command("list")
+@click.option("--platform", "-p", type=click.Choice(["youtube", "tiktok"]), default=None)
+def queue_list(platform: str):
+    """List pending uploads."""
+    db = Database(settings.DATABASE_PATH)
+    router = UploadRouter(db)
+
+    platform_enum = None
+    if platform:
+        platform_enum = Platform.YOUTUBE if platform == "youtube" else Platform.TIKTOK
+
+    uploads = router.get_pending_uploads(platform=platform_enum)
+
+    if not uploads:
+        click.echo("No pending uploads.")
+        return
+
+    click.echo(f"Pending Uploads ({len(uploads)}):\n")
+
+    for upload in uploads:
+        acc = db.get_account(upload.account_id)
+        comp = db.get_compilation(upload.compilation_id)
+
+        click.echo(f"{upload.id}:")
+        click.echo(f"  Compilation: {comp.title if comp else upload.compilation_id}")
+        click.echo(f"  Account: {acc.name if acc else upload.account_id} ({upload.platform.value})")
+        click.echo(f"  Privacy: {upload.privacy}")
+        click.echo(f"  Status: {upload.status.value}")
+        if upload.error:
+            click.echo(f"  Error: {upload.error}")
+        click.echo()
+
+
+@queue.command("stats")
+def queue_stats():
+    """Show upload queue statistics."""
+    db = Database(settings.DATABASE_PATH)
+    router = UploadRouter(db)
+
+    stats = router.get_upload_stats()
+
+    click.echo("Upload Queue Statistics:")
+    click.echo(f"  Pending:   {stats['pending']}")
+    click.echo(f"  Uploading: {stats['uploading']}")
+    click.echo(f"  Success:   {stats['success']}")
+    click.echo(f"  Failed:    {stats['failed']}")
+    click.echo(f"  Total:     {stats['total']}")
+
+
+@queue.command("retry")
+def queue_retry():
+    """Retry failed uploads."""
+    db = Database(settings.DATABASE_PATH)
+    router = UploadRouter(db)
+
+    count = router.retry_failed_uploads()
+    click.echo(f"Re-queued {count} failed uploads.")
+
+
+# =============================================================================
+# Daemon Commands
+# =============================================================================
+
+
+@cli.group()
+def daemon():
+    """Control the background daemon."""
+    pass
+
+
+@daemon.command("start")
+@click.option("--aggressive", is_flag=True, help="Use aggressive schedule")
+def daemon_start(aggressive: bool):
+    """Start the daemon (runs in foreground)."""
+    import subprocess
+    import os
+
+    script = Path(__file__).parent / "daemon.py"
+    args = ["python", str(script)]
+    if aggressive:
+        args.append("--aggressive")
+
+    click.echo("Starting daemon...")
+    click.echo("Press Ctrl+C to stop.")
+
+    os.execvp("python", args)
+
+
+@daemon.command("run-now")
+def daemon_run_now():
+    """Run the full pipeline once."""
+    from scheduler.jobs import PipelineScheduler
+
+    scheduler = PipelineScheduler()
+    click.echo("Running full pipeline...")
+    scheduler.job_full_pipeline()
+    click.echo("Pipeline complete.")
+
+
+@daemon.command("status")
+def daemon_status():
+    """Show daemon and pipeline status."""
+    import subprocess
+
+    script = Path(__file__).parent / "daemon.py"
+    subprocess.run(["python", str(script), "--status"])
 
 
 if __name__ == "__main__":

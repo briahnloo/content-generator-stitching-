@@ -8,7 +8,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Optional, Generator
 
-from .models import Video, Compilation, VideoStatus, CompilationStatus
+from .models import (
+    Video, Compilation, VideoStatus, CompilationStatus,
+    Account, Upload, RoutingRule, Platform, ContentStrategy, UploadStatus
+)
 
 
 class Database:
@@ -76,6 +79,8 @@ class Database:
                     music_track TEXT,
                     youtube_id TEXT,
                     credits_text TEXT,
+                    auto_approved INTEGER DEFAULT 0,
+                    confidence_score REAL DEFAULT 0,
                     hook TEXT,
                     clip_captions TEXT,
                     transitions TEXT,
@@ -84,13 +89,79 @@ class Database:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
 
+                CREATE TABLE IF NOT EXISTS accounts (
+                    id TEXT PRIMARY KEY,
+                    platform TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    handle TEXT,
+                    content_strategy TEXT DEFAULT 'mixed',
+                    credentials_encrypted TEXT,
+                    daily_upload_limit INTEGER DEFAULT 3,
+                    uploads_today INTEGER DEFAULT 0,
+                    last_upload_at TIMESTAMP,
+                    is_active INTEGER DEFAULT 1,
+                    error TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS uploads (
+                    id TEXT PRIMARY KEY,
+                    compilation_id TEXT NOT NULL,
+                    account_id TEXT NOT NULL,
+                    platform TEXT NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    platform_video_id TEXT,
+                    privacy TEXT DEFAULT 'private',
+                    scheduled_at TIMESTAMP,
+                    uploaded_at TIMESTAMP,
+                    error TEXT,
+                    retry_count INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (compilation_id) REFERENCES compilations(id),
+                    FOREIGN KEY (account_id) REFERENCES accounts(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS routing_rules (
+                    id TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    min_confidence REAL DEFAULT 0.7,
+                    priority INTEGER DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (account_id) REFERENCES accounts(id)
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
                 CREATE INDEX IF NOT EXISTS idx_videos_category ON videos(category);
                 CREATE INDEX IF NOT EXISTS idx_videos_tiktok_id ON videos(tiktok_id);
                 CREATE INDEX IF NOT EXISTS idx_videos_compilation_id ON videos(compilation_id);
                 CREATE INDEX IF NOT EXISTS idx_compilations_status ON compilations(status);
                 CREATE INDEX IF NOT EXISTS idx_compilations_category ON compilations(category);
+                CREATE INDEX IF NOT EXISTS idx_accounts_platform ON accounts(platform);
+                CREATE INDEX IF NOT EXISTS idx_accounts_active ON accounts(is_active);
+                CREATE INDEX IF NOT EXISTS idx_uploads_status ON uploads(status);
+                CREATE INDEX IF NOT EXISTS idx_uploads_account ON uploads(account_id);
+                CREATE INDEX IF NOT EXISTS idx_uploads_compilation ON uploads(compilation_id);
+                CREATE INDEX IF NOT EXISTS idx_routing_account ON routing_rules(account_id);
+                CREATE INDEX IF NOT EXISTS idx_routing_category ON routing_rules(category);
             """)
+
+            # Migration: Add new columns to existing tables if they don't exist
+            self._migrate_schema(conn)
+
+    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        """Add new columns to existing tables for backwards compatibility."""
+        # Get existing columns in compilations table
+        cursor = conn.execute("PRAGMA table_info(compilations)")
+        existing_columns = {row[1] for row in cursor.fetchall()}
+
+        # Add auto_approved if missing
+        if "auto_approved" not in existing_columns:
+            conn.execute("ALTER TABLE compilations ADD COLUMN auto_approved INTEGER DEFAULT 0")
+
+        # Add confidence_score if missing
+        if "confidence_score" not in existing_columns:
+            conn.execute("ALTER TABLE compilations ADD COLUMN confidence_score REAL DEFAULT 0")
 
     # =========================================================================
     # Video CRUD Operations
@@ -322,3 +393,288 @@ class Database:
             "compilations_by_status": compilation_status_counts,
             "videos_by_category": category_counts,
         }
+
+    # =========================================================================
+    # Account CRUD Operations
+    # =========================================================================
+
+    def insert_account(self, account: Account) -> bool:
+        """Insert a new account record."""
+        with self._get_connection() as conn:
+            try:
+                data = account.to_db_dict()
+                columns = ", ".join(data.keys())
+                placeholders = ", ".join(["?" for _ in data])
+                conn.execute(
+                    f"INSERT INTO accounts ({columns}) VALUES ({placeholders})",
+                    list(data.values())
+                )
+                return True
+            except sqlite3.IntegrityError:
+                return False
+
+    def update_account(self, account: Account) -> None:
+        """Update an existing account record."""
+        with self._get_connection() as conn:
+            data = account.to_db_dict()
+            account_id = data.pop("id")
+            set_clause = ", ".join([f"{k} = ?" for k in data.keys()])
+            conn.execute(
+                f"UPDATE accounts SET {set_clause} WHERE id = ?",
+                list(data.values()) + [account_id]
+            )
+
+    def get_account(self, account_id: str) -> Optional[Account]:
+        """Get an account by ID."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM accounts WHERE id = ?", (account_id,)
+            ).fetchone()
+            return Account.from_db_row(dict(row)) if row else None
+
+    def get_accounts_by_platform(
+        self, platform: Platform, active_only: bool = True
+    ) -> List[Account]:
+        """Get accounts by platform."""
+        with self._get_connection() as conn:
+            if active_only:
+                rows = conn.execute(
+                    "SELECT * FROM accounts WHERE platform = ? AND is_active = 1 ORDER BY name",
+                    (platform.value,)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM accounts WHERE platform = ? ORDER BY name",
+                    (platform.value,)
+                ).fetchall()
+            return [Account.from_db_row(dict(row)) for row in rows]
+
+    def get_accounts_by_strategy(
+        self, strategy: ContentStrategy, platform: Optional[Platform] = None
+    ) -> List[Account]:
+        """Get accounts by content strategy."""
+        with self._get_connection() as conn:
+            if platform:
+                rows = conn.execute(
+                    """SELECT * FROM accounts
+                       WHERE content_strategy = ? AND platform = ? AND is_active = 1
+                       ORDER BY name""",
+                    (strategy.value, platform.value)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT * FROM accounts
+                       WHERE content_strategy = ? AND is_active = 1
+                       ORDER BY name""",
+                    (strategy.value,)
+                ).fetchall()
+            return [Account.from_db_row(dict(row)) for row in rows]
+
+    def get_all_accounts(self, active_only: bool = True) -> List[Account]:
+        """Get all accounts."""
+        with self._get_connection() as conn:
+            if active_only:
+                rows = conn.execute(
+                    "SELECT * FROM accounts WHERE is_active = 1 ORDER BY platform, name"
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM accounts ORDER BY platform, name"
+                ).fetchall()
+            return [Account.from_db_row(dict(row)) for row in rows]
+
+    def delete_account(self, account_id: str) -> None:
+        """Delete an account and its routing rules."""
+        with self._get_connection() as conn:
+            conn.execute("DELETE FROM routing_rules WHERE account_id = ?", (account_id,))
+            conn.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
+
+    def reset_daily_upload_counts(self) -> None:
+        """Reset uploads_today to 0 for all accounts (call daily)."""
+        with self._get_connection() as conn:
+            conn.execute("UPDATE accounts SET uploads_today = 0")
+
+    def increment_upload_count(self, account_id: str) -> None:
+        """Increment the uploads_today counter for an account."""
+        with self._get_connection() as conn:
+            conn.execute(
+                """UPDATE accounts
+                   SET uploads_today = uploads_today + 1, last_upload_at = CURRENT_TIMESTAMP
+                   WHERE id = ?""",
+                (account_id,)
+            )
+
+    # =========================================================================
+    # Upload CRUD Operations
+    # =========================================================================
+
+    def insert_upload(self, upload: Upload) -> bool:
+        """Insert a new upload record."""
+        with self._get_connection() as conn:
+            try:
+                data = upload.to_db_dict()
+                columns = ", ".join(data.keys())
+                placeholders = ", ".join(["?" for _ in data])
+                conn.execute(
+                    f"INSERT INTO uploads ({columns}) VALUES ({placeholders})",
+                    list(data.values())
+                )
+                return True
+            except sqlite3.IntegrityError:
+                return False
+
+    def update_upload(self, upload: Upload) -> None:
+        """Update an existing upload record."""
+        with self._get_connection() as conn:
+            data = upload.to_db_dict()
+            upload_id = data.pop("id")
+            set_clause = ", ".join([f"{k} = ?" for k in data.keys()])
+            conn.execute(
+                f"UPDATE uploads SET {set_clause} WHERE id = ?",
+                list(data.values()) + [upload_id]
+            )
+
+    def get_upload(self, upload_id: str) -> Optional[Upload]:
+        """Get an upload by ID."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM uploads WHERE id = ?", (upload_id,)
+            ).fetchone()
+            return Upload.from_db_row(dict(row)) if row else None
+
+    def get_uploads_by_status(
+        self, status: UploadStatus, limit: Optional[int] = None
+    ) -> List[Upload]:
+        """Get uploads by status."""
+        with self._get_connection() as conn:
+            query = "SELECT * FROM uploads WHERE status = ? ORDER BY created_at"
+            if limit:
+                query += f" LIMIT {limit}"
+            rows = conn.execute(query, (status.value,)).fetchall()
+            return [Upload.from_db_row(dict(row)) for row in rows]
+
+    def get_uploads_for_compilation(self, compilation_id: str) -> List[Upload]:
+        """Get all uploads for a compilation."""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM uploads WHERE compilation_id = ? ORDER BY created_at",
+                (compilation_id,)
+            ).fetchall()
+            return [Upload.from_db_row(dict(row)) for row in rows]
+
+    def get_uploads_for_account(
+        self, account_id: str, status: Optional[UploadStatus] = None
+    ) -> List[Upload]:
+        """Get uploads for an account."""
+        with self._get_connection() as conn:
+            if status:
+                rows = conn.execute(
+                    "SELECT * FROM uploads WHERE account_id = ? AND status = ? ORDER BY created_at DESC",
+                    (account_id, status.value)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM uploads WHERE account_id = ? ORDER BY created_at DESC",
+                    (account_id,)
+                ).fetchall()
+            return [Upload.from_db_row(dict(row)) for row in rows]
+
+    def get_pending_uploads(self, limit: Optional[int] = None) -> List[Upload]:
+        """Get pending uploads ordered by scheduled time."""
+        with self._get_connection() as conn:
+            query = """SELECT * FROM uploads
+                       WHERE status = 'pending'
+                       ORDER BY COALESCE(scheduled_at, created_at)"""
+            if limit:
+                query += f" LIMIT {limit}"
+            rows = conn.execute(query).fetchall()
+            return [Upload.from_db_row(dict(row)) for row in rows]
+
+    def upload_exists_for_compilation_account(
+        self, compilation_id: str, account_id: str
+    ) -> bool:
+        """Check if an upload already exists for this compilation/account pair."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                """SELECT 1 FROM uploads
+                   WHERE compilation_id = ? AND account_id = ? LIMIT 1""",
+                (compilation_id, account_id)
+            ).fetchone()
+            return row is not None
+
+    def delete_upload(self, upload_id: str) -> None:
+        """Delete an upload record."""
+        with self._get_connection() as conn:
+            conn.execute("DELETE FROM uploads WHERE id = ?", (upload_id,))
+
+    # =========================================================================
+    # Routing Rule CRUD Operations
+    # =========================================================================
+
+    def insert_routing_rule(self, rule: RoutingRule) -> bool:
+        """Insert a new routing rule."""
+        with self._get_connection() as conn:
+            try:
+                data = rule.to_db_dict()
+                columns = ", ".join(data.keys())
+                placeholders = ", ".join(["?" for _ in data])
+                conn.execute(
+                    f"INSERT INTO routing_rules ({columns}) VALUES ({placeholders})",
+                    list(data.values())
+                )
+                return True
+            except sqlite3.IntegrityError:
+                return False
+
+    def update_routing_rule(self, rule: RoutingRule) -> None:
+        """Update an existing routing rule."""
+        with self._get_connection() as conn:
+            data = rule.to_db_dict()
+            rule_id = data.pop("id")
+            set_clause = ", ".join([f"{k} = ?" for k in data.keys()])
+            conn.execute(
+                f"UPDATE routing_rules SET {set_clause} WHERE id = ?",
+                list(data.values()) + [rule_id]
+            )
+
+    def get_routing_rule(self, rule_id: str) -> Optional[RoutingRule]:
+        """Get a routing rule by ID."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM routing_rules WHERE id = ?", (rule_id,)
+            ).fetchone()
+            return RoutingRule.from_db_row(dict(row)) if row else None
+
+    def get_routing_rules_for_account(self, account_id: str) -> List[RoutingRule]:
+        """Get all routing rules for an account."""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM routing_rules WHERE account_id = ? ORDER BY priority DESC",
+                (account_id,)
+            ).fetchall()
+            return [RoutingRule.from_db_row(dict(row)) for row in rows]
+
+    def get_routing_rules_for_category(self, category: str) -> List[RoutingRule]:
+        """Get all routing rules for a category, ordered by priority."""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """SELECT r.* FROM routing_rules r
+                   JOIN accounts a ON r.account_id = a.id
+                   WHERE r.category = ? AND a.is_active = 1
+                   ORDER BY r.priority DESC""",
+                (category,)
+            ).fetchall()
+            return [RoutingRule.from_db_row(dict(row)) for row in rows]
+
+    def get_all_routing_rules(self) -> List[RoutingRule]:
+        """Get all routing rules."""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM routing_rules ORDER BY account_id, priority DESC"
+            ).fetchall()
+            return [RoutingRule.from_db_row(dict(row)) for row in rows]
+
+    def delete_routing_rule(self, rule_id: str) -> None:
+        """Delete a routing rule."""
+        with self._get_connection() as conn:
+            conn.execute("DELETE FROM routing_rules WHERE id = ?", (rule_id,))

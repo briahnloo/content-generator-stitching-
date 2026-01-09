@@ -12,15 +12,46 @@ from config.settings import settings, categories_config
 
 logger = logging.getLogger(__name__)
 
+# Default confidence threshold for auto-approval
+DEFAULT_AUTO_APPROVE_THRESHOLD = 0.75
+
 
 class GrouperService:
     """Groups classified videos into compilations by category."""
 
-    def __init__(self, db: Database):
-        """Initialize grouper service."""
+    def __init__(self, db: Database, auto_approve_threshold: Optional[float] = None):
+        """
+        Initialize grouper service.
+
+        Args:
+            db: Database instance
+            auto_approve_threshold: Confidence threshold for auto-approval.
+                Set to None to disable auto-approval.
+        """
         self.db = db
         self.min_clips = settings.MIN_CLIPS_PER_COMPILATION
         self.max_clips = settings.MAX_CLIPS_PER_COMPILATION
+
+        # Get threshold from settings or use default
+        if auto_approve_threshold is None:
+            self.auto_approve_threshold = getattr(
+                settings, 'AUTO_APPROVE_THRESHOLD', DEFAULT_AUTO_APPROVE_THRESHOLD
+            )
+        else:
+            self.auto_approve_threshold = auto_approve_threshold
+
+    def _calculate_confidence_score(self, videos: List[Video]) -> float:
+        """Calculate average confidence score for a set of videos."""
+        if not videos:
+            return 0.0
+        confidences = [v.category_confidence for v in videos if v.category_confidence > 0]
+        return sum(confidences) / len(confidences) if confidences else 0.0
+
+    def _should_auto_approve(self, confidence_score: float) -> bool:
+        """Determine if a compilation should be auto-approved based on confidence."""
+        if self.auto_approve_threshold is None:
+            return False
+        return confidence_score >= self.auto_approve_threshold
 
     def _get_next_part_number(self, category: str) -> int:
         """Get the next part number for a category's compilations."""
@@ -93,6 +124,18 @@ class GrouperService:
         authors = list(set(v.author for v in selected_videos if v.author))
         credits_text = ", ".join(f"@{a}" for a in authors)
 
+        # Calculate confidence score for auto-approval
+        confidence_score = self._calculate_confidence_score(selected_videos)
+        should_auto_approve = self._should_auto_approve(confidence_score)
+
+        # Determine initial status
+        initial_status = CompilationStatus.PENDING
+        if should_auto_approve:
+            logger.info(
+                f"Compilation {compilation_id} auto-approved "
+                f"(confidence: {confidence_score:.2f} >= {self.auto_approve_threshold})"
+            )
+
         # Create compilation
         compilation = Compilation(
             id=compilation_id,
@@ -100,7 +143,9 @@ class GrouperService:
             title=title,
             video_ids=[v.id for v in selected_videos],
             credits_text=credits_text,
-            status=CompilationStatus.PENDING,
+            status=initial_status,
+            confidence_score=confidence_score,
+            auto_approved=should_auto_approve,
         )
 
         # Insert compilation

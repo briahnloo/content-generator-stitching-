@@ -7,6 +7,16 @@ pyyaml>=6.0
 python-dotenv>=1.0.0
 tqdm>=4.65.0
 
+# Encryption for secure credential storage
+cryptography>=41.0.0
+
+# Scheduler for automated pipeline
+APScheduler>=3.10.0
+
 # Optional: YouTube upload
 google-api-python-client>=2.100.0
 google-auth-oauthlib>=1.1.0
+
+# Optional: TikTok upload
+tiktok-uploader>=0.1.0
+browser-cookie3>=0.19.0
