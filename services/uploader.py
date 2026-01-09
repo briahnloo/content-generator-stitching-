@@ -157,7 +157,7 @@ class UploaderService:
     def upload(
         self,
         compilation: Compilation,
-        privacy: str = "private",
+        privacy: str = "public",
         progress_callback: Optional[callable] = None,
     ) -> Optional[str]:
         """

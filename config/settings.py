@@ -9,17 +9,12 @@ from typing import List
 from dotenv import load_dotenv
 import yaml
 
+# Load environment variables
+load_dotenv()
+
 # Base paths
 BASE_DIR = Path(__file__).parent.parent
 CONFIG_DIR = BASE_DIR / "config"
-
-# Load environment variables - explicitly from project root
-env_path = BASE_DIR / ".env"
-if env_path.exists():
-    load_dotenv(env_path, override=True)
-else:
-    # Fallback to default behavior (current directory)
-    load_dotenv()
 
 
 def _get_env(key: str, default: str = None, required: bool = False) -> str:
@@ -71,9 +66,9 @@ class Settings:
     FPS: int = _get_env_int("FPS", 30)
     MAX_CLIP_DURATION: float = _get_env_float("MAX_CLIP_DURATION", 15.0)
 
-    # Compilation Settings (5 clips @ ~15s each = ~75s total, within 60-90s target)
+    # Compilation Settings
     MIN_CLIPS_PER_COMPILATION: int = _get_env_int("MIN_CLIPS_PER_COMPILATION", 5)
-    MAX_CLIPS_PER_COMPILATION: int = _get_env_int("MAX_CLIPS_PER_COMPILATION", 5)
+    MAX_CLIPS_PER_COMPILATION: int = _get_env_int("MAX_CLIPS_PER_COMPILATION", 8)
     MIN_CLASSIFICATION_CONFIDENCE: float = _get_env_float("MIN_CLASSIFICATION_CONFIDENCE", 0.3)
 
     # Discovery
@@ -130,31 +125,99 @@ class CategoriesConfig:
             "categories": {
                 "fails": {
                     "name": "Epic Fails",
-                    "keywords": ["fail", "fails", "accident", "gone wrong", "oops", "instant regret"],
-                    "hashtags": ["#fail", "#epicfail", "#fails", "#instantregret"],
+                    "keywords": ["fail", "accident", "gone wrong", "oops"],
+                    "hashtags": ["#fail", "#epicfail", "#fails"],
                     "compilation_titles": [
                         "Try Not To Laugh: {count} Epic Fails",
                         "Fails of the Day #{part}",
-                        "When Things Go Wrong #{part}",
-                        "Instant Regret Compilation #{part}"
+                        "When Things Go Wrong #{part}"
                     ],
                     "mood": "upbeat"
                 },
+                "satisfying": {
+                    "name": "Oddly Satisfying",
+                    "keywords": ["satisfying", "asmr", "relaxing", "smooth"],
+                    "hashtags": ["#satisfying", "#oddlysatisfying", "#asmr"],
+                    "compilation_titles": [
+                        "Oddly Satisfying Videos #{part}",
+                        "{count} Satisfying Moments to Relax",
+                        "Most Satisfying Compilation #{part}"
+                    ],
+                    "mood": "chill"
+                },
+                "wholesome": {
+                    "name": "Wholesome Moments",
+                    "keywords": ["wholesome", "heartwarming", "cute", "sweet", "faith in humanity"],
+                    "hashtags": ["#wholesome", "#heartwarming", "#feelgood"],
+                    "compilation_titles": [
+                        "Wholesome Moments That Made My Day #{part}",
+                        "{count} Heartwarming Clips",
+                        "Faith in Humanity Restored #{part}"
+                    ],
+                    "mood": "emotional"
+                },
                 "comedy": {
                     "name": "Comedy Gold",
-                    "keywords": ["funny", "comedy", "hilarious", "lol", "humor", "joke", "meme"],
-                    "hashtags": ["#funny", "#comedy", "#humor", "#memes"],
+                    "keywords": ["funny", "comedy", "hilarious", "lol", "humor", "joke"],
+                    "hashtags": ["#funny", "#comedy", "#humor"],
                     "compilation_titles": [
                         "Try Not To Laugh #{part}",
                         "{count} Hilarious Moments",
-                        "Comedy Gold Compilation #{part}",
-                        "Funny Moments #{part}"
+                        "Comedy Gold Compilation #{part}"
                     ],
                     "mood": "upbeat"
+                },
+                "skills": {
+                    "name": "Amazing Skills",
+                    "keywords": ["skill", "talent", "amazing", "impressive", "pro", "expert"],
+                    "hashtags": ["#skills", "#talent", "#amazing"],
+                    "compilation_titles": [
+                        "People Are Awesome #{part}",
+                        "{count} Incredible Skills",
+                        "Next Level Talent #{part}"
+                    ],
+                    "mood": "hype"
+                },
+                "animals": {
+                    "name": "Animal Moments",
+                    "keywords": ["animal", "pet", "dog", "cat", "wildlife", "cute animal"],
+                    "hashtags": ["#animals", "#pets", "#cute"],
+                    "compilation_titles": [
+                        "Cutest Animal Moments #{part}",
+                        "{count} Adorable Pet Clips",
+                        "Animals Being Derps #{part}"
+                    ],
+                    "mood": "chill"
+                },
+                "food": {
+                    "name": "Food Content",
+                    "keywords": ["food", "cooking", "recipe", "eating", "mukbang", "foodie"],
+                    "hashtags": ["#food", "#cooking", "#foodie"],
+                    "compilation_titles": [
+                        "Food Videos That Hit Different #{part}",
+                        "{count} Delicious Moments",
+                        "Cooking Compilation #{part}"
+                    ],
+                    "mood": "chill"
+                },
+                "drama": {
+                    "name": "Drama & Confrontations",
+                    "keywords": ["drama", "confrontation", "argument", "fight", "exposed", "caught"],
+                    "hashtags": ["#drama", "#exposed", "#caught"],
+                    "compilation_titles": [
+                        "Drama Compilation #{part}",
+                        "{count} Intense Moments",
+                        "Caught on Camera #{part}"
+                    ],
+                    "mood": "dramatic"
                 }
             },
             "music_moods": {
-                "upbeat": ["energetic.mp3", "fun.mp3", "happy.mp3", "comedic.mp3"]
+                "upbeat": ["energetic.mp3", "fun.mp3", "happy.mp3"],
+                "chill": ["lofi.mp3", "ambient.mp3", "calm.mp3"],
+                "emotional": ["piano.mp3", "inspirational.mp3"],
+                "hype": ["epic.mp3", "intense.mp3"],
+                "dramatic": ["suspense.mp3", "tension.mp3"]
             }
         }
 

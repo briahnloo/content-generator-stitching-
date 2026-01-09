@@ -40,12 +40,9 @@ class CaptionerService:
                 "end_card": "",
             }
 
-        # Generate countdown format: "category moments:\n5:\n4:\n3:\n2:\n1:"
-        category_config = categories_config.get_category(compilation.category)
-        category_name = category_config.get("name", compilation.category.title()).lower()
-        
-        countdown_lines = [f"{category_name} moments:"] + [f"{i}:" for i in range(num_clips, 0, -1)]
-        first_clip_caption = "\n".join(countdown_lines)
+        # Generate countdown string: "5, 4, 3, 2, 1" based on clip count
+        countdown = ", ".join(str(i) for i in range(num_clips, 0, -1))
+        first_clip_caption = f"Top Viral Moments: {countdown}"
 
         # Only first clip gets the caption, rest are empty
         clip_captions = [first_clip_caption] + [""] * (num_clips - 1)

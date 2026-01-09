@@ -86,13 +86,12 @@ class StitcherService:
     def _process_clip(
         self,
         video: Video,
-        caption: str,  # Currently unused - captions disabled
+        caption: str,
         output_path: Path,
         temp_dir: Path,
     ) -> bool:
         """
-        Process a single clip: scale, crop, limit duration.
-        Note: Captions are currently disabled.
+        Process a single clip: scale, crop, add caption, limit duration.
         Returns True on success.
         """
         if not video.local_path or not Path(video.local_path).exists():
@@ -109,8 +108,18 @@ class StitcherService:
             f"fps={self.fps}",
         ]
 
-        # Captions disabled - raw video only
-        # TODO: Re-enable captions if needed in the future
+        # Add caption if provided
+        if caption and caption.strip():
+            escaped_caption = self._escape_text(caption)
+            filters.append(
+                f"drawtext=text='{escaped_caption}':"
+                f"fontsize=48:"
+                f"fontcolor=white:"
+                f"borderw=3:"
+                f"bordercolor=black:"
+                f"x=(w-text_w)/2:"
+                f"y=h-th-100"
+            )
 
         filter_string = ",".join(filters)
 
