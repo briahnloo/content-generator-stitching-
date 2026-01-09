@@ -1,0 +1,181 @@
+categories:
+  fails:
+    name: "Epic Fails"
+    keywords:
+      - fail
+      - accident
+      - gone wrong
+      - oops
+      - mishap
+    hashtags:
+      - "#fail"
+      - "#epicfail"
+      - "#fails"
+      - "#gonewrong"
+    compilation_titles:
+      - "Try Not To Laugh: {count} Epic Fails"
+      - "Fails of the Day #{part}"
+      - "When Things Go Wrong #{part}"
+    mood: upbeat
+
+  satisfying:
+    name: "Oddly Satisfying"
+    keywords:
+      - satisfying
+      - asmr
+      - relaxing
+      - smooth
+      - perfect fit
+    hashtags:
+      - "#satisfying"
+      - "#oddlysatisfying"
+      - "#asmr"
+    compilation_titles:
+      - "Oddly Satisfying Videos #{part}"
+      - "{count} Satisfying Moments to Relax"
+      - "Most Satisfying Compilation #{part}"
+    mood: chill
+
+  wholesome:
+    name: "Wholesome Moments"
+    keywords:
+      - wholesome
+      - heartwarming
+      - cute
+      - sweet
+      - faith in humanity
+      - emotional
+    hashtags:
+      - "#wholesome"
+      - "#heartwarming"
+      - "#feelgood"
+    compilation_titles:
+      - "Wholesome Moments That Made My Day #{part}"
+      - "{count} Heartwarming Clips"
+      - "Faith in Humanity Restored #{part}"
+    mood: emotional
+
+  comedy:
+    name: "Comedy Gold"
+    keywords:
+      - funny
+      - comedy
+      - hilarious
+      - lol
+      - humor
+      - joke
+      - prank
+    hashtags:
+      - "#funny"
+      - "#comedy"
+      - "#humor"
+      - "#lol"
+    compilation_titles:
+      - "Try Not To Laugh #{part}"
+      - "{count} Hilarious Moments"
+      - "Comedy Gold Compilation #{part}"
+    mood: upbeat
+
+  skills:
+    name: "Amazing Skills"
+    keywords:
+      - skill
+      - talent
+      - amazing
+      - impressive
+      - pro
+      - expert
+      - insane
+    hashtags:
+      - "#skills"
+      - "#talent"
+      - "#amazing"
+      - "#impressive"
+    compilation_titles:
+      - "People Are Awesome #{part}"
+      - "{count} Incredible Skills"
+      - "Next Level Talent #{part}"
+    mood: hype
+
+  animals:
+    name: "Animal Moments"
+    keywords:
+      - animal
+      - pet
+      - dog
+      - cat
+      - wildlife
+      - puppy
+      - kitten
+    hashtags:
+      - "#animals"
+      - "#pets"
+      - "#cute"
+      - "#dogsoftiktok"
+      - "#catsoftiktok"
+    compilation_titles:
+      - "Cutest Animal Moments #{part}"
+      - "{count} Adorable Pet Clips"
+      - "Animals Being Derps #{part}"
+    mood: chill
+
+  food:
+    name: "Food Content"
+    keywords:
+      - food
+      - cooking
+      - recipe
+      - eating
+      - mukbang
+      - foodie
+      - delicious
+    hashtags:
+      - "#food"
+      - "#cooking"
+      - "#foodie"
+      - "#recipe"
+    compilation_titles:
+      - "Food Videos That Hit Different #{part}"
+      - "{count} Delicious Moments"
+      - "Cooking Compilation #{part}"
+    mood: chill
+
+  drama:
+    name: "Drama & Confrontations"
+    keywords:
+      - drama
+      - confrontation
+      - argument
+      - fight
+      - exposed
+      - caught
+      - freakout
+    hashtags:
+      - "#drama"
+      - "#exposed"
+      - "#caught"
+      - "#publicfreakout"
+    compilation_titles:
+      - "Drama Compilation #{part}"
+      - "{count} Intense Moments"
+      - "Caught on Camera #{part}"
+    mood: dramatic
+
+music_moods:
+  upbeat:
+    - energetic.mp3
+    - fun.mp3
+    - happy.mp3
+  chill:
+    - lofi.mp3
+    - ambient.mp3
+    - calm.mp3
+  emotional:
+    - piano.mp3
+    - inspirational.mp3
+  hype:
+    - epic.mp3
+    - intense.mp3
+  dramatic:
+    - suspense.mp3
+    - tension.mp3
