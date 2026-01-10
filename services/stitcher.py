@@ -86,19 +86,18 @@ class StitcherService:
     def _process_clip(
         self,
         video: Video,
-        caption: str,
         output_path: Path,
         temp_dir: Path,
     ) -> bool:
         """
-        Process a single clip: scale, crop, add caption, limit duration.
+        Process a single clip: scale, crop, limit duration.
         Returns True on success.
         """
         if not video.local_path or not Path(video.local_path).exists():
             logger.error(f"Video file not found: {video.local_path}")
             return False
 
-        # Build filter chain
+        # Build filter chain (no captions - raw video only)
         filters = [
             # Scale to fit while maintaining aspect ratio
             f"scale={self.width}:{self.height}:force_original_aspect_ratio=increase",
@@ -107,19 +106,6 @@ class StitcherService:
             # Set frame rate
             f"fps={self.fps}",
         ]
-
-        # Add caption if provided
-        if caption and caption.strip():
-            escaped_caption = self._escape_text(caption)
-            filters.append(
-                f"drawtext=text='{escaped_caption}':"
-                f"fontsize=48:"
-                f"fontcolor=white:"
-                f"borderw=3:"
-                f"bordercolor=black:"
-                f"x=(w-text_w)/2:"
-                f"y=h-th-100"
-            )
 
         filter_string = ",".join(filters)
 
@@ -318,12 +304,7 @@ class StitcherService:
 
                     clip_path = temp_path / f"clip_{i:03d}.mp4"
 
-                    # Get caption
-                    caption = video.caption
-                    if not caption and compilation.clip_captions and i < len(compilation.clip_captions):
-                        caption = compilation.clip_captions[i]
-
-                    if self._process_clip(video, caption, clip_path, temp_path):
+                    if self._process_clip(video, clip_path, temp_path):
                         clip_paths.append(clip_path)
                     else:
                         logger.warning(f"Failed to process clip {i} ({video.id})")

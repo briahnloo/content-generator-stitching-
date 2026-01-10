@@ -13,7 +13,8 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from core.database import Database
 from core.models import (
-    VideoStatus, CompilationStatus, Platform, UploadStatus
+    VideoStatus, CompilationStatus, Platform, UploadStatus,
+    Upload, Account, Compilation
 )
 from config.settings import settings
 from services.discovery import DiscoveryService
@@ -200,7 +201,7 @@ class PipelineScheduler:
             if result:
                 self._process_tiktok_upload(result)
 
-    def _process_youtube_upload(self, result: Tuple) -> None:
+    def _process_youtube_upload(self, result: Tuple[Upload, Account, Compilation]) -> None:
         """Process a single YouTube upload."""
         upload, account, compilation = result
         
@@ -230,7 +231,7 @@ class PipelineScheduler:
         except Exception as e:
             logger.error(f"YouTube upload processing failed: {e}")
 
-    def _process_tiktok_upload(self, result: Tuple) -> None:
+    def _process_tiktok_upload(self, result: Tuple[Upload, Account, Compilation]) -> None:
         """Process a single TikTok upload."""
         upload, account, compilation = result
         
