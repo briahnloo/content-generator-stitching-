@@ -1,5 +1,6 @@
 # Categories for viral clips pipeline
-# Focused on fails and comedy content only
+# Enhanced with subcategories for thematic coherence in compilations
+# Focus: INSTANT VISUAL COMEDY - no narrative/trend content
 
 categories:
   fails:
@@ -26,6 +27,22 @@ categories:
       - "When Things Go Wrong #{part}"
       - "Instant Regret Compilation #{part}"
     mood: upbeat
+    subcategories:
+      physical:
+        name: "Physical Fails"
+        description: "Falls, trips, crashes, physical accidents - VISUAL ONLY"
+        keywords: ["fall", "trip", "crash", "slip", "tumble", "wipeout", "faceplant"]
+        min_confidence: 0.6
+      skill:
+        name: "Skill Fails"
+        description: "Failed tricks, sports fails, DIY gone wrong - must SEE the fail"
+        keywords: ["trick", "attempt", "try", "diy", "sport", "stunt", "jump"]
+        min_confidence: 0.6
+      social:
+        name: "Social Fails"
+        description: "Caught on camera moments - must be visually obvious"
+        keywords: ["caught", "cringe", "regret", "oops"]
+        min_confidence: 0.65
 
   comedy:
     name: "Comedy Gold"
@@ -35,22 +52,272 @@ categories:
       - hilarious
       - lol
       - humor
-      - joke
-      - prank
-      - meme
-      - laughing
     hashtags:
       - "#funny"
       - "#comedy"
       - "#humor"
       - "#lol"
-      - "#memes"
     compilation_titles:
       - "Try Not To Laugh #{part}"
       - "{count} Hilarious Moments"
       - "Comedy Gold Compilation #{part}"
       - "Funny Moments #{part}"
     mood: upbeat
+    subcategories:
+      physical:
+        name: "Physical Comedy"
+        description: "Slapstick, physical humor - funny WITHOUT audio"
+        keywords: ["slapstick", "physical", "clumsy", "bonk", "hit"]
+        min_confidence: 0.6
+      reaction:
+        name: "Reaction Comedy"
+        description: "Funny FACES and expressions - not reaction videos to other content"
+        keywords: ["expression", "surprised", "shocked", "face"]
+        min_confidence: 0.65
+      animal:
+        name: "Animal Comedy"
+        description: "Animals doing visually funny things"
+        keywords: ["cat", "dog", "pet", "animal", "derp"]
+        min_confidence: 0.6
+
+# ============================================================================
+# NARRATIVE/TREND REJECTION - These formats don't work in compilations
+# ============================================================================
+
+narrative_rejection:
+  # Regex patterns to detect trend/narrative formats in descriptions
+  # These are ALWAYS rejected - they require context/audio to understand
+
+  trend_patterns:
+    # "Telling X that Y" format - reaction bait
+    - 'telling\s+(my|his|her|their)\s+\w+'
+    - 'told\s+(my|his|her|their)\s+\w+'
+    - 'when\s+i\s+told'
+    - 'when\s+he\s+told'
+    - 'when\s+she\s+told'
+
+    # POV format - requires context
+    - 'pov[\s:\-]'
+    - 'pov\s+you'
+    - 'pov\s+when'
+    - 'pov\s+your'
+
+    # "Watch till end" - means setup required
+    - 'watch\s+till'
+    - 'wait\s+for\s+it'
+    - 'wait\s+till'
+    - 'watch\s+until'
+    - 'stay\s+till'
+    - 'wait\s+for\s+the\s+end'
+
+    # Story/skit format
+    - 'part\s+\d+'
+    - 'episode\s+\d+'
+    - 'storytime'
+    - 'story\s+time'
+
+    # Reaction to other content
+    - 'reacting\s+to'
+    - 'my\s+reaction'
+    - 'his\s+reaction'
+    - 'her\s+reaction'
+    - 'their\s+reaction'
+    - 'reaction\s+to'
+
+    # Dialogue-dependent formats
+    - 'what\s+he\s+said'
+    - 'what\s+she\s+said'
+    - 'what\s+i\s+said'
+    - 'the\s+way\s+he'
+    - 'the\s+way\s+she'
+    - 'listen\s+to\s+this'
+    - 'hear\s+what'
+
+    # Relationship/drama bait
+    - 'caught\s+(my|him|her)\s+(bf|gf|boyfriend|girlfriend|husband|wife|partner)'
+    - 'found\s+(my|his|her)\s+\w+\s+on'
+    - 'cheating'
+    - 'confronted'
+    - 'exposed\s+(my|him|her)'
+
+    # "This is how" explainer format
+    - 'this\s+is\s+how'
+    - 'this\s+is\s+why'
+    - 'this\s+is\s+what'
+    - 'let\s+me\s+explain'
+    - "here's\\s+why"
+    - "here's\\s+how"
+
+    # Suspense/cliffhanger
+    - "you\\s+won't\\s+believe"
+    - "i\\s+can't\\s+believe"
+    - 'plot\s+twist'
+    - 'the\s+ending'
+    - 'unexpected\s+ending'
+
+    # Trend sounds/formats
+    - 'using\s+this\s+sound'
+    - 'trend'
+    - 'duet\s+this'
+    - 'stitch\s+this'
+
+  # Keywords that strongly indicate narrative content
+  narrative_keywords:
+    - storytime
+    - story time
+    - part 1
+    - part 2
+    - part 3
+    - episode
+    - chapter
+    - update
+    - context
+    - backstory
+    - explaining
+    - explained
+    - the reason
+    - heres why
+    - let me tell you
+    - so basically
+    - long story short
+
+  # Hashtags that indicate narrative/trend content
+  narrative_hashtags:
+    - "#storytime"
+    - "#pov"
+    - "#skit"
+    - "#acting"
+    - "#trend"
+    - "#duet"
+    - "#stitch"
+    - "#greenscreen"
+    - "#greenscreenvideo"
+    - "#relatable"
+    - "#relateable"
+    - "#couple"
+    - "#couples"
+    - "#relationship"
+    - "#boyfriend"
+    - "#girlfriend"
+    - "#drama"
+    - "#exposed"
+    - "#tea"
+    - "#spill"
+    - "#rant"
+
+# ============================================================================
+# HARD REJECTION CRITERIA
+# ============================================================================
+
+rejection_criteria:
+  hard_reject:
+    # Content types that never work in compilations
+    - dancing
+    - choreography
+    - dance challenge
+    - thirst trap
+    - modeling
+    - posing
+    - outfit check
+    - ootd
+    - grwm
+    - get ready with me
+    - advertisement
+    - ad
+    - sponsored
+    - promotion
+    - lip sync
+    - singing
+    - karaoke
+    - beauty
+    - makeup
+    - skincare
+    - tutorial
+    - routine
+    - day in my life
+    - vlog
+    - motivational
+    - inspirational
+    - couples content
+    - relationship goals
+    - asmr
+    - eating
+    - mukbang
+    - unboxing
+    - haul
+    - review
+    - storytime
+    - story time
+    - pov
+    - skit
+    - acting
+    - roleplay
+
+  soft_reject:
+    # Reject unless VERY strong visual comedy signal
+    - rant
+    - drama
+    - news
+    - political
+    - educational
+    - informative
+
+# ============================================================================
+# VISUAL INDEPENDENCE SIGNALS
+# ============================================================================
+
+visual_signals:
+  # Signals that content works WITHOUT audio
+  high_visual_independence:
+    - physical action visible
+    - facial expression is the joke
+    - object falling or breaking
+    - animal doing something
+    - kid doing something
+    - visible impact or collision
+    - before/after in same frame
+    - physical transformation
+    - instant payoff
+    - no text required to understand
+
+  # Signals that content NEEDS audio
+  low_visual_independence:
+    - dialogue is the punchline
+    - reaction to something off-screen
+    - requires audio to understand
+    - text overlay is the joke
+    - voiceover dependent
+    - music sync dependent
+    - sound effect is the joke
+    - listening to something
+    - responding to audio
+    - conversation based
+
+# ============================================================================
+# COMPILATION SUITABILITY
+# ============================================================================
+
+compilation_quality:
+  # Perfect for rapid-fire compilations
+  high_quality:
+    - instant visual payoff
+    - funny in first 3 seconds
+    - clear subject
+    - self-contained moment
+    - no context needed
+    - works on mute
+
+  # Not suitable for compilations
+  low_quality:
+    - slow build up
+    - requires audio
+    - text-heavy overlay
+    - references other content
+    - inside joke
+    - requires context
+    - punchline at end
+    - narrative structure
+    - multi-part story
 
 music_moods:
   upbeat:

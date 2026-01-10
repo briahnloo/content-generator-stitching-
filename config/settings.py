@@ -271,6 +271,83 @@ class CategoriesConfig:
             category=config.get("name", category.title())
         )
 
+    @classmethod
+    def get_subcategories(cls, category: str) -> dict:
+        """Get subcategories for a category."""
+        config = cls.get_category(category)
+        return config.get("subcategories", {})
+
+    @classmethod
+    def get_subcategory_names(cls, category: str) -> List[str]:
+        """Get list of subcategory names for a category."""
+        return list(cls.get_subcategories(category).keys())
+
+    @classmethod
+    def get_subcategory(cls, category: str, subcategory: str) -> dict:
+        """Get a specific subcategory configuration."""
+        return cls.get_subcategories(category).get(subcategory, {})
+
+    @classmethod
+    def get_hard_reject_keywords(cls) -> List[str]:
+        """Get keywords that should always be rejected."""
+        rejection = cls._load().get("rejection_criteria", {})
+        return rejection.get("hard_reject", [])
+
+    @classmethod
+    def get_soft_reject_keywords(cls) -> List[str]:
+        """Get keywords that should be rejected unless strong signal."""
+        rejection = cls._load().get("rejection_criteria", {})
+        return rejection.get("soft_reject", [])
+
+    @classmethod
+    def get_positive_signals(cls, category: str) -> List[str]:
+        """Get positive signals for a category."""
+        signals = cls._load().get("positive_signals", {})
+        return signals.get(category, [])
+
+    @classmethod
+    def get_compilation_quality_signals(cls) -> dict:
+        """Get quality signals for compilation suitability."""
+        return cls._load().get("compilation_quality", {
+            "high_quality": [],
+            "low_quality": []
+        })
+
+    @classmethod
+    def get_narrative_rejection(cls) -> dict:
+        """Get narrative/trend rejection patterns."""
+        return cls._load().get("narrative_rejection", {
+            "trend_patterns": [],
+            "narrative_keywords": [],
+            "narrative_hashtags": []
+        })
+
+    @classmethod
+    def get_trend_patterns(cls) -> List[str]:
+        """Get regex patterns for trend content detection."""
+        rejection = cls.get_narrative_rejection()
+        return rejection.get("trend_patterns", [])
+
+    @classmethod
+    def get_narrative_keywords(cls) -> List[str]:
+        """Get keywords indicating narrative content."""
+        rejection = cls.get_narrative_rejection()
+        return rejection.get("narrative_keywords", [])
+
+    @classmethod
+    def get_narrative_hashtags(cls) -> List[str]:
+        """Get hashtags indicating narrative/trend content."""
+        rejection = cls.get_narrative_rejection()
+        return rejection.get("narrative_hashtags", [])
+
+    @classmethod
+    def get_visual_signals(cls) -> dict:
+        """Get visual independence signals."""
+        return cls._load().get("visual_signals", {
+            "high_visual_independence": [],
+            "low_visual_independence": []
+        })
+
 
 # Singleton instance
 settings = Settings()

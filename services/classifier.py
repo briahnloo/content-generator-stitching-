@@ -1,9 +1,12 @@
 """
-Classifier service for categorizing videos using GPT-4o-mini.
+Enhanced classifier service for categorizing videos using GPT-4o-mini.
+Three-stage classification: trend pre-filter, hard reject, then LLM with visual_independence scoring.
+GOAL: Only accept INSTANT VISUAL MOMENTS that work without audio/context.
 """
 
 import json
 import logging
+import re
 from typing import Tuple, Optional, List
 
 from openai import OpenAI
@@ -14,50 +17,124 @@ from config.settings import settings, categories_config
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are a strict content classifier for short-form viral video compilations. Your job is to identify ONLY genuinely funny fails or comedy content.
 
-ACCEPTED CATEGORIES (only use these):
-1. fails - accidents, mishaps, things going wrong, instant regret, people falling, crashes, fails
-2. comedy - funny skits, humor, pranks, jokes, memes, funny reactions, comedic moments
+# Updated prompt: EXPLICITLY anti-narrative, requires visual independence
+CLASSIFICATION_PROMPT = """You are an expert classifier for short-form COMPILATION videos. Your job is to find clips for rapid-fire "Try Not to Laugh" compilations where each clip is 5-15 seconds.
 
-REJECTED CONTENT (use "reject" category for these):
-- Dancing or choreography of any kind
-- People posing, modeling, or showing off outfits
-- Thirst traps or attractive people just existing on camera
-- Advertisements, product promotions, sponsored content
-- Lip syncing or singing
-- Beauty, makeup, skincare, fashion content
-- Lifestyle vlogs, routines, "day in my life"
-- Relationship content, couples content
-- Motivational or inspirational content
-- Music videos or performances
+⚠️ CRITICAL: These clips will be:
+- Played back-to-back with other clips
+- Stripped of original audio (music overlay added)
+- Watched by viewers with NO context about the original
 
-Respond with JSON only:
-{"category": "fails|comedy|reject", "confidence": 0.0-1.0, "reasoning": "brief explanation"}
+═══════════════════════════════════════════════════════════════
+🎯 WHAT WE WANT: INSTANT VISUAL MOMENTS
+═══════════════════════════════════════════════════════════════
 
-Rules:
-- ONLY accept content that is genuinely FUNNY or shows a FAIL
-- Use "reject" for anything that doesn't fit fails or comedy
-- Be STRICT - when in doubt, reject
-- Dancing = ALWAYS reject, no exceptions
-- Ads/promos = ALWAYS reject
-- People just looking attractive = ALWAYS reject
-- confidence 0.7+ for clear fails/comedy
-- confidence 0.3-0.7 for moderate
-- Use "reject" with high confidence for unwanted content"""
+The PERFECT clip is funny THE INSTANT you see it:
+- Someone falls → immediately funny (ACCEPT)
+- Cat knocks something over → immediately funny (ACCEPT)
+- Failed trick → the moment of failure is funny (ACCEPT)
+- Surprised face → expression tells the whole story (ACCEPT)
+- Object unexpectedly breaks → visual payoff (ACCEPT)
+
+Categories:
+1. FAILS (physical | skill | social)
+   - physical: Falls, trips, crashes, collisions - VISUAL accidents
+   - skill: Failed tricks, sports fails, DIY disasters - SEE the failure
+   - social: Embarrassing caught-on-camera moments - must be VISUALLY obvious
+
+2. COMEDY (physical | reaction | animal)
+   - physical: Slapstick, getting bonked, funny accidents
+   - reaction: Funny FACIAL EXPRESSIONS (not reactions to other content)
+   - animal: Pets/animals doing visually funny things
+
+═══════════════════════════════════════════════════════════════
+🚫 HARD REJECT - NARRATIVE/TREND CONTENT
+═══════════════════════════════════════════════════════════════
+
+These formats NEVER work in compilations because they need context/audio:
+
+❌ "Telling my X that Y" - reaction bait, needs dialogue
+❌ "POV: you are..." - requires buying into the premise
+❌ "Watch till the end" - means there's buildup required
+❌ "Part 1/2/3" - serialized content
+❌ Skits with dialogue - punchline is in what they SAY
+❌ Reactions to other content - "reacting to...", duets, stitches
+❌ Relationship drama - "caught my bf", confrontations
+❌ Story time content - "so basically what happened..."
+❌ Sound-dependent jokes - "the sound he made", trending audio
+❌ Text overlay is the joke - if you need to read text to get it
+❌ Green screen/commentary - person talking about something
+
+Also always reject:
+❌ Dancing, choreography, thirst traps, posing
+❌ Lip sync, singing, ASMR, mukbang
+❌ Ads, sponsored, tutorials, vlogs
+❌ Motivational, inspirational content
+❌ Beauty/makeup/skincare content
+
+═══════════════════════════════════════════════════════════════
+🔇 THE MUTE TEST (visual_independence score)
+═══════════════════════════════════════════════════════════════
+
+Imagine watching this clip on MUTE with no captions:
+- 1.0: Instantly funny, no audio needed at all (physical fail, animal being derpy)
+- 0.8: Very funny visually, audio adds little (surprised face, object breaking)
+- 0.6: Funny but audio helps somewhat (verbal reaction visible but not essential)
+- 0.4: Need to hear something to fully get it
+- 0.2: Mostly depends on audio/dialogue
+- 0.0: Completely audio-dependent (talking, singing, sound effect IS the joke)
+
+For compilations, we need visual_independence >= 0.7
+
+═══════════════════════════════════════════════════════════════
+📊 COMPILATION SCORE
+═══════════════════════════════════════════════════════════════
+
+Rate how well this works in a rapid-fire compilation:
+- 0.9-1.0: Perfect. Funny in first 2 seconds. No setup needed.
+- 0.7-0.9: Great. Clear visual payoff, works standalone.
+- 0.5-0.7: Decent but needs a moment to understand.
+- 0.3-0.5: Too slow or needs context.
+- 0.0-0.3: Doesn't work in compilation format.
+
+═══════════════════════════════════════════════════════════════
+
+Response format (JSON only, no other text):
+{
+  "category": "fails|comedy|reject",
+  "subcategory": "physical|skill|social|reaction|animal|none",
+  "confidence": 0.0-1.0,
+  "compilation_score": 0.0-1.0,
+  "visual_independence": 0.0-1.0,
+  "reasoning": "brief explanation",
+  "rejection_reason": "if rejected, why specifically"
+}"""
 
 
 class ClassifierService:
-    """Classifies videos into fails/comedy categories, rejecting other content."""
+    """Enhanced classifier with three-stage filtering: trend patterns, hard reject, LLM."""
 
-    # Only accept these categories for compilations
     ACCEPTED_CATEGORIES = {"fails", "comedy"}
+
+    # Subcategories by category
+    SUBCATEGORIES = {
+        "fails": ["physical", "skill", "social"],
+        "comedy": ["physical", "reaction", "animal"]
+    }
 
     def __init__(self, db: Database):
         """Initialize classifier service."""
         self.db = db
         self._client: Optional[OpenAI] = None
         self.model = settings.OPENAI_MODEL
+
+        # Load rejection patterns from config
+        self.hard_reject_keywords = categories_config.get_hard_reject_keywords()
+        self.soft_reject_keywords = categories_config.get_soft_reject_keywords()
+        self.trend_patterns = categories_config.get_trend_patterns()
+        self.narrative_keywords = categories_config.get_narrative_keywords()
+        self.narrative_hashtags = categories_config.get_narrative_hashtags()
 
     @property
     def client(self) -> OpenAI:
@@ -68,23 +145,137 @@ class ClassifierService:
             self._client = OpenAI(api_key=settings.OPENAI_API_KEY)
         return self._client
 
+    def _check_trend_patterns(self, text: str) -> Tuple[bool, str]:
+        """
+        Check if text matches any trend/narrative patterns.
+        Returns (is_trend, matched_pattern).
+        """
+        text_lower = text.lower()
+
+        # Check regex patterns
+        for pattern in self.trend_patterns:
+            try:
+                if re.search(pattern, text_lower, re.IGNORECASE):
+                    return True, f"Trend pattern: {pattern}"
+            except re.error:
+                continue
+
+        # Check narrative keywords
+        for keyword in self.narrative_keywords:
+            if keyword.lower() in text_lower:
+                return True, f"Narrative keyword: {keyword}"
+
+        return False, ""
+
+    def _check_narrative_hashtags(self, hashtags: List[str]) -> Tuple[bool, str]:
+        """
+        Check if hashtags indicate narrative/trend content.
+        Returns (is_narrative, matched_hashtag).
+        """
+        hashtags_lower = [h.lower() for h in hashtags]
+
+        for narrative_tag in self.narrative_hashtags:
+            if narrative_tag.lower() in hashtags_lower:
+                return True, f"Narrative hashtag: {narrative_tag}"
+
+        return False, ""
+
+    def _pre_filter(self, video: Video) -> Tuple[bool, str]:
+        """
+        Three-stage pre-filter before LLM classification.
+        Returns (should_reject, reason).
+
+        Stage 1: Trend/narrative pattern detection
+        Stage 2: Hard reject keywords
+        Stage 3: Spam detection
+        """
+        text_to_check = f"{video.description} {' '.join(video.hashtags)}"
+        text_lower = text_to_check.lower()
+
+        # Stage 1: Check trend/narrative patterns (MOST IMPORTANT)
+        is_trend, trend_reason = self._check_trend_patterns(video.description)
+        if is_trend:
+            return True, trend_reason
+
+        # Check narrative hashtags
+        is_narrative, hashtag_reason = self._check_narrative_hashtags(video.hashtags)
+        if is_narrative:
+            return True, hashtag_reason
+
+        # Stage 2: Check hard reject keywords
+        for keyword in self.hard_reject_keywords:
+            if keyword.lower() in text_lower:
+                return True, f"Hard reject keyword: {keyword}"
+
+        # Stage 3: Check for common TikTok spam patterns
+        spam_patterns = [
+            r"follow\s*for\s*more",
+            r"link\s*in\s*bio",
+            r"shop\s*now",
+            r"use\s*code",
+            r"dm\s*for",
+            r"collab\s*\?",
+            r"rate\s*me",
+            r"hot\s*or\s*not",
+            r"duet\s*this",
+            r"stitch\s*with",
+        ]
+
+        for pattern in spam_patterns:
+            if re.search(pattern, text_lower):
+                return True, f"Spam pattern: {pattern}"
+
+        # Check for excessive hashtag count (likely spam or algorithm gaming)
+        if len(video.hashtags) > 15:
+            return True, "Too many hashtags (likely spam)"
+
+        # Check for low-effort descriptions that suggest trend content
+        low_effort_exact = [
+            "part 1", "part 2", "part 3",
+            "wait for it", "watch till end",
+            "pov", "storytime", "story time",
+        ]
+        for phrase in low_effort_exact:
+            if phrase in text_lower:
+                return True, f"Low-effort trend phrase: {phrase}"
+
+        return False, ""
+
     def _build_user_prompt(self, video: Video) -> str:
         """Build the user prompt for classification."""
         parts = []
 
         if video.description:
-            parts.append(f"Description: {video.description[:500]}")
+            # Clean description
+            desc = video.description[:500].strip()
+            parts.append(f"Description: {desc}")
 
         if video.hashtags:
-            parts.append(f"Hashtags: {' '.join(video.hashtags[:20])}")
+            # Take relevant hashtags (not generic viral tags)
+            generic_tags = {"#fyp", "#foryou", "#foryoupage", "#viral", "#xyzbca", "#trending", "#blowthisup"}
+            relevant_tags = [
+                tag for tag in video.hashtags[:15]
+                if tag.lower() not in generic_tags
+            ]
+            if relevant_tags:
+                parts.append(f"Hashtags: {' '.join(relevant_tags)}")
 
         if video.author:
             parts.append(f"Author: @{video.author}")
 
+        # Add duration context (shorter = better for compilations)
+        if video.duration > 0:
+            if video.duration <= 10:
+                parts.append(f"Duration: {video.duration:.1f}s (short - good for compilation)")
+            elif video.duration <= 20:
+                parts.append(f"Duration: {video.duration:.1f}s (medium length)")
+            else:
+                parts.append(f"Duration: {video.duration:.1f}s (long - may have buildup)")
+
         return "\n".join(parts) if parts else "No description available"
 
-    def _parse_response(self, response_text: str) -> Tuple[str, float, str]:
-        """Parse GPT response into category, confidence, reasoning."""
+    def _parse_response(self, response_text: str) -> dict:
+        """Parse GPT response into structured result."""
         try:
             # Clean up response (remove markdown code blocks if present)
             text = response_text.strip()
@@ -97,95 +288,178 @@ class ClassifierService:
             data = json.loads(text)
 
             category = data.get("category", "").lower().strip()
+            subcategory = data.get("subcategory", "").lower().strip()
             confidence = float(data.get("confidence", 0))
+            compilation_score = float(data.get("compilation_score", 0))
+            visual_independence = float(data.get("visual_independence", 0))
             reasoning = data.get("reasoning", "")
+            rejection_reason = data.get("rejection_reason", "")
 
-            # Handle reject category
-            if category == "reject":
-                return "reject", confidence, reasoning
-
-            # Validate category - only accept fails or comedy
-            if category not in self.ACCEPTED_CATEGORIES:
-                logger.warning(f"Invalid category '{category}', treating as reject")
-                return "reject", 0.8, f"Invalid category: {category}"
-
-            # Clamp confidence
+            # Clamp values
             confidence = max(0.0, min(1.0, confidence))
+            compilation_score = max(0.0, min(1.0, compilation_score))
+            visual_independence = max(0.0, min(1.0, visual_independence))
 
-            return category, confidence, reasoning
+            # Validate category
+            if category not in self.ACCEPTED_CATEGORIES and category != "reject":
+                category = "reject"
+                rejection_reason = f"Invalid category: {data.get('category', 'unknown')}"
 
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            # Validate subcategory
+            if category in self.ACCEPTED_CATEGORIES:
+                valid_subs = self.SUBCATEGORIES.get(category, [])
+                if subcategory not in valid_subs:
+                    subcategory = valid_subs[0] if valid_subs else ""
+
+            return {
+                "category": category,
+                "subcategory": subcategory if category != "reject" else "",
+                "confidence": confidence,
+                "compilation_score": compilation_score,
+                "visual_independence": visual_independence,
+                "reasoning": reasoning,
+                "rejection_reason": rejection_reason,
+            }
+
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
             logger.warning(f"Failed to parse classification response: {e}")
-            return "reject", 0.5, f"Parse error: {e}"
+            return {
+                "category": "reject",
+                "subcategory": "",
+                "confidence": 0.5,
+                "compilation_score": 0.0,
+                "visual_independence": 0.0,
+                "reasoning": f"Parse error: {e}",
+                "rejection_reason": "Could not parse LLM response",
+            }
 
-    def classify(self, video: Video) -> Tuple[str, float, str]:
+    def classify(self, video: Video) -> dict:
         """
-        Classify a single video.
-        Returns (category, confidence, reasoning).
+        Classify a single video with three-stage filtering.
+        Returns dict with category, subcategory, confidence, compilation_score,
+        visual_independence, reasoning.
         """
+        # Stage 1 & 2: Pre-filter (trend patterns + hard reject)
+        should_reject, reject_reason = self._pre_filter(video)
+        if should_reject:
+            logger.debug(f"Pre-filtered {video.id}: {reject_reason}")
+            return {
+                "category": "reject",
+                "subcategory": "",
+                "confidence": 0.95,  # High confidence in pre-filter rejections
+                "compilation_score": 0.0,
+                "visual_independence": 0.0,
+                "reasoning": f"Pre-filter rejection: {reject_reason}",
+                "rejection_reason": reject_reason,
+            }
+
+        # Stage 3: LLM classification with visual_independence scoring
         user_prompt = self._build_user_prompt(video)
 
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": CLASSIFICATION_PROMPT},
                     {"role": "user", "content": user_prompt},
                 ],
-                temperature=0.3,
-                max_tokens=150,
+                temperature=0.1,  # Very low temperature for consistent classification
+                max_tokens=300,
             )
 
             response_text = response.choices[0].message.content
-            category, confidence, reasoning = self._parse_response(response_text)
+            result = self._parse_response(response_text)
 
             logger.debug(
-                f"Classified {video.id}: {category} ({confidence:.2f}) - {reasoning}"
+                f"Classified {video.id}: {result['category']}/{result['subcategory']} "
+                f"(conf: {result['confidence']:.2f}, comp: {result['compilation_score']:.2f}, "
+                f"visual: {result['visual_independence']:.2f})"
             )
 
-            return category, confidence, reasoning
+            return result
 
         except Exception as e:
             logger.error(f"Classification failed for {video.id}: {e}")
             raise
 
     def classify_and_update(
-        self, video: Video, min_confidence: float = None
+        self,
+        video: Video,
+        min_confidence: float = None,
+        min_compilation_score: float = 0.6,
+        min_visual_independence: float = 0.6
     ) -> bool:
         """
         Classify a video and update the database.
-        Returns True if classified as fails/comedy with sufficient confidence.
-        Returns False if rejected or low confidence.
+        Returns True if classified as fails/comedy with sufficient scores.
+        Returns False if rejected or low scores.
+
+        New: Also checks visual_independence threshold.
         """
         if min_confidence is None:
             min_confidence = settings.MIN_CLASSIFICATION_CONFIDENCE
 
         try:
-            category, confidence, reasoning = self.classify(video)
+            result = self.classify(video)
 
-            video.category = category
-            video.category_confidence = confidence
-            video.classification_reasoning = reasoning
+            # Update video with classification results
+            video.category = result["category"]
+            video.subcategory = result["subcategory"]
+            video.category_confidence = result["confidence"]
+            video.compilation_score = result["compilation_score"]
+            video.visual_independence = result["visual_independence"]
+
+            # Build reasoning string
+            reasoning_parts = [result["reasoning"]]
+            if result["rejection_reason"]:
+                reasoning_parts.append(f"Rejection: {result['rejection_reason']}")
+            video.classification_reasoning = " | ".join(filter(None, reasoning_parts))
 
             # Reject category = skip the video
-            if category == "reject":
+            if result["category"] == "reject":
                 video.status = VideoStatus.SKIPPED
-                logger.info(f"Video {video.id} rejected: {reasoning}")
+                logger.info(
+                    f"Video {video.id} rejected: {result.get('rejection_reason', result['reasoning'])}"
+                )
                 video.error = ""
                 self.db.update_video(video)
                 return False
 
             # Low confidence = skip
-            if confidence < min_confidence:
+            if result["confidence"] < min_confidence:
                 video.status = VideoStatus.SKIPPED
-                logger.info(f"Video {video.id} skipped (low confidence: {confidence:.2f})")
+                logger.info(f"Video {video.id} skipped (low confidence: {result['confidence']:.2f})")
                 video.error = ""
                 self.db.update_video(video)
                 return False
 
-            # Accepted: fails or comedy with good confidence
+            # Low compilation score = skip (not suitable for compilations)
+            if result["compilation_score"] < min_compilation_score:
+                video.status = VideoStatus.SKIPPED
+                logger.info(
+                    f"Video {video.id} skipped (low compilation score: {result['compilation_score']:.2f})"
+                )
+                video.error = ""
+                self.db.update_video(video)
+                return False
+
+            # Low visual independence = skip (needs audio/context)
+            if result["visual_independence"] < min_visual_independence:
+                video.status = VideoStatus.SKIPPED
+                logger.info(
+                    f"Video {video.id} skipped (low visual independence: {result['visual_independence']:.2f})"
+                )
+                video.error = ""
+                self.db.update_video(video)
+                return False
+
+            # Accepted: fails or comedy with good scores
             video.status = VideoStatus.CLASSIFIED
-            logger.info(f"Video {video.id} classified as {category} ({confidence:.2f})")
+            logger.info(
+                f"Video {video.id} classified as {result['category']}/{result['subcategory']} "
+                f"(conf: {result['confidence']:.2f}, comp: {result['compilation_score']:.2f}, "
+                f"visual: {result['visual_independence']:.2f})"
+            )
             video.error = ""
             self.db.update_video(video)
             return True
@@ -200,6 +474,8 @@ class ClassifierService:
         self,
         videos: List[Video],
         min_confidence: float = None,
+        min_compilation_score: float = 0.6,
+        min_visual_independence: float = 0.6,
         progress_callback: Optional[callable] = None,
     ) -> Tuple[int, int, int]:
         """
@@ -215,7 +491,9 @@ class ClassifierService:
                 progress_callback(i + 1, len(videos), video)
 
             try:
-                if self.classify_and_update(video, min_confidence):
+                if self.classify_and_update(
+                    video, min_confidence, min_compilation_score, min_visual_independence
+                ):
                     classified += 1
                 else:
                     if video.status == VideoStatus.SKIPPED:
@@ -234,6 +512,8 @@ class ClassifierService:
         self,
         limit: Optional[int] = None,
         min_confidence: float = None,
+        min_compilation_score: float = 0.6,
+        min_visual_independence: float = 0.6,
         progress_callback: Optional[callable] = None,
     ) -> Tuple[int, int, int]:
         """
@@ -246,4 +526,92 @@ class ClassifierService:
         if not videos:
             return 0, 0, 0
 
-        return self.classify_batch(videos, min_confidence, progress_callback)
+        return self.classify_batch(
+            videos, min_confidence, min_compilation_score, min_visual_independence, progress_callback
+        )
+
+    def reclassify_low_confidence(
+        self,
+        threshold: float = 0.5,
+        limit: Optional[int] = None,
+    ) -> Tuple[int, int]:
+        """
+        Re-classify videos that were previously classified with low confidence.
+        Returns (reclassified_count, unchanged_count).
+        """
+        # Get classified videos with low confidence
+        videos = self.db.get_videos_by_status(VideoStatus.CLASSIFIED, limit)
+        low_confidence = [v for v in videos if v.category_confidence < threshold]
+
+        logger.info(f"Found {len(low_confidence)} low-confidence videos to reclassify")
+
+        reclassified = 0
+        unchanged = 0
+
+        for video in low_confidence:
+            old_category = video.category
+            old_subcategory = video.subcategory
+
+            result = self.classify(video)
+
+            if result["category"] != old_category or result["subcategory"] != old_subcategory:
+                video.category = result["category"]
+                video.subcategory = result["subcategory"]
+                video.category_confidence = result["confidence"]
+                video.compilation_score = result["compilation_score"]
+                video.visual_independence = result["visual_independence"]
+                video.classification_reasoning = result["reasoning"]
+
+                if result["category"] == "reject":
+                    video.status = VideoStatus.SKIPPED
+
+                self.db.update_video(video)
+                reclassified += 1
+            else:
+                unchanged += 1
+
+        logger.info(f"Reclassification: {reclassified} changed, {unchanged} unchanged")
+        return reclassified, unchanged
+
+    def reclassify_low_visual_independence(
+        self,
+        threshold: float = 0.6,
+        limit: Optional[int] = None,
+    ) -> Tuple[int, int]:
+        """
+        Re-classify videos that have low visual_independence scores.
+        These may have been classified before the visual_independence metric was added.
+        Returns (reclassified_count, unchanged_count).
+        """
+        videos = self.db.get_videos_by_status(VideoStatus.CLASSIFIED, limit)
+        low_visual = [v for v in videos if v.visual_independence < threshold]
+
+        logger.info(f"Found {len(low_visual)} low visual independence videos to reclassify")
+
+        reclassified = 0
+        unchanged = 0
+
+        for video in low_visual:
+            result = self.classify(video)
+
+            video.category = result["category"]
+            video.subcategory = result["subcategory"]
+            video.category_confidence = result["confidence"]
+            video.compilation_score = result["compilation_score"]
+            video.visual_independence = result["visual_independence"]
+            video.classification_reasoning = result["reasoning"]
+
+            # If visual independence is still too low, skip the video
+            if result["visual_independence"] < threshold:
+                video.status = VideoStatus.SKIPPED
+                reclassified += 1
+            elif result["category"] == "reject":
+                video.status = VideoStatus.SKIPPED
+                reclassified += 1
+            else:
+                unchanged += 1
+
+            self.db.update_video(video)
+
+        logger.info(f"Visual independence reclassification: {reclassified} changed, {unchanged} unchanged")
+        return reclassified, unchanged

@@ -1,10 +1,12 @@
 """
-Grouper service for clustering classified videos into compilations.
+Enhanced grouper service for clustering classified videos into coherent compilations.
+Groups by subcategory for thematic consistency.
+Prioritizes videos with high visual_independence scores.
 """
 
 import logging
 import uuid
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 
 from core.models import Video, Compilation, VideoStatus, CompilationStatus
 from core.database import Database
@@ -15,11 +17,23 @@ logger = logging.getLogger(__name__)
 # Default confidence threshold for auto-approval
 DEFAULT_AUTO_APPROVE_THRESHOLD = 0.75
 
+# Minimum compilation score for videos to be included
+DEFAULT_MIN_COMPILATION_SCORE = 0.6
+
+# Minimum visual independence for videos to be included in compilations
+DEFAULT_MIN_VISUAL_INDEPENDENCE = 0.6
+
 
 class GrouperService:
-    """Groups classified videos into compilations by category."""
+    """Groups classified videos into thematically coherent compilations."""
 
-    def __init__(self, db: Database, auto_approve_threshold: Optional[float] = None):
+    def __init__(
+        self,
+        db: Database,
+        auto_approve_threshold: Optional[float] = None,
+        min_compilation_score: float = DEFAULT_MIN_COMPILATION_SCORE,
+        min_visual_independence: float = DEFAULT_MIN_VISUAL_INDEPENDENCE,
+    ):
         """
         Initialize grouper service.
 
@@ -27,10 +41,14 @@ class GrouperService:
             db: Database instance
             auto_approve_threshold: Confidence threshold for auto-approval.
                 Set to None to disable auto-approval.
+            min_compilation_score: Minimum compilation score for videos.
+            min_visual_independence: Minimum visual_independence for videos.
         """
         self.db = db
         self.min_clips = settings.MIN_CLIPS_PER_COMPILATION
         self.max_clips = settings.MAX_CLIPS_PER_COMPILATION
+        self.min_compilation_score = min_compilation_score
+        self.min_visual_independence = min_visual_independence
 
         # Get threshold from settings or use default
         if auto_approve_threshold is None:
@@ -47,21 +65,101 @@ class GrouperService:
         confidences = [v.category_confidence for v in videos if v.category_confidence > 0]
         return sum(confidences) / len(confidences) if confidences else 0.0
 
-    def _should_auto_approve(self, confidence_score: float) -> bool:
-        """Determine if a compilation should be auto-approved based on confidence."""
+    def _calculate_compilation_quality(self, videos: List[Video]) -> float:
+        """Calculate average compilation score for a set of videos."""
+        if not videos:
+            return 0.0
+        scores = [v.compilation_score for v in videos if v.compilation_score > 0]
+        return sum(scores) / len(scores) if scores else 0.0
+
+    def _calculate_visual_independence(self, videos: List[Video]) -> float:
+        """Calculate average visual_independence score for a set of videos."""
+        if not videos:
+            return 0.0
+        scores = [v.visual_independence for v in videos if v.visual_independence > 0]
+        return sum(scores) / len(scores) if scores else 0.0
+
+    def _should_auto_approve(
+        self,
+        confidence_score: float,
+        compilation_quality: float,
+        visual_independence: float,
+    ) -> bool:
+        """
+        Determine if a compilation should be auto-approved.
+        Now requires high visual_independence as well.
+        """
         if self.auto_approve_threshold is None:
             return False
-        return confidence_score >= self.auto_approve_threshold
+        # All three metrics must meet threshold for auto-approval
+        return (
+            confidence_score >= self.auto_approve_threshold and
+            compilation_quality >= self.auto_approve_threshold and
+            visual_independence >= self.auto_approve_threshold
+        )
 
-    def _get_next_part_number(self, category: str) -> int:
+    def _get_next_part_number(self, category: str, subcategory: str = "") -> int:
         """Get the next part number for a category's compilations."""
         compilations = self.db.get_compilations_by_status(CompilationStatus.UPLOADED)
         compilations += self.db.get_compilations_by_status(CompilationStatus.APPROVED)
         compilations += self.db.get_compilations_by_status(CompilationStatus.REVIEW)
         compilations += self.db.get_compilations_by_status(CompilationStatus.PENDING)
 
+        # Count compilations with matching category (optionally subcategory in title)
         category_count = sum(1 for c in compilations if c.category == category)
         return category_count + 1
+
+    def _filter_quality_videos(self, videos: List[Video]) -> List[Video]:
+        """
+        Filter videos that meet quality thresholds.
+        Handles legacy videos (score=0) by including them with lower priority.
+        """
+        quality_videos = []
+        for v in videos:
+            # Legacy videos (scores=0) are included but will be sorted lower
+            is_legacy = v.compilation_score == 0 and v.visual_independence == 0
+
+            if is_legacy:
+                # Include legacy videos for backwards compatibility
+                quality_videos.append(v)
+            elif (v.compilation_score >= self.min_compilation_score and
+                  v.visual_independence >= self.min_visual_independence):
+                # New videos must meet both thresholds
+                quality_videos.append(v)
+
+        return quality_videos
+
+    def get_groupable_subcategories(self) -> Dict[str, Dict[str, int]]:
+        """
+        Get subcategories that have enough quality videos for a compilation.
+        Returns dict of category -> subcategory -> video count.
+        """
+        groupable = {}
+
+        for category in categories_config.get_category_names():
+            subcategories = self.db.get_available_subcategories(
+                category,
+                min_videos=self.min_clips,
+                status=VideoStatus.CLASSIFIED,
+            )
+
+            if subcategories:
+                # Re-filter with visual_independence threshold
+                filtered_subcats = {}
+                for subcat, count in subcategories.items():
+                    videos = self.db.get_videos_by_subcategory(
+                        category, subcat,
+                        status=VideoStatus.CLASSIFIED,
+                        unassigned_only=True,
+                    )
+                    quality_videos = self._filter_quality_videos(videos)
+                    if len(quality_videos) >= self.min_clips:
+                        filtered_subcats[subcat] = len(quality_videos)
+
+                if filtered_subcats:
+                    groupable[category] = filtered_subcats
+
+        return groupable
 
     def get_groupable_categories(self) -> Dict[str, int]:
         """
@@ -77,63 +175,110 @@ class GrouperService:
                 unassigned_only=True,
             )
 
-            if len(videos) >= self.min_clips:
-                groupable[category] = len(videos)
+            # Filter by quality thresholds
+            quality_videos = self._filter_quality_videos(videos)
+
+            if len(quality_videos) >= self.min_clips:
+                groupable[category] = len(quality_videos)
 
         return groupable
 
-    def create_compilation(
-        self, category: str, num_clips: Optional[int] = None
+    def _select_best_videos(
+        self,
+        videos: List[Video],
+        num_clips: int,
+    ) -> List[Video]:
+        """
+        Select the best videos for a compilation.
+        Prioritizes by visual_independence first, then compilation_score, then engagement.
+        """
+        # Filter by quality thresholds
+        quality_videos = self._filter_quality_videos(videos)
+
+        # Sort by:
+        # 1. visual_independence (most important for compilations)
+        # 2. compilation_score
+        # 3. engagement_score
+        # Legacy videos (score=0) are treated as 0.5 tier
+        sorted_videos = sorted(
+            quality_videos,
+            key=lambda v: (
+                v.visual_independence if v.visual_independence > 0 else 0.5,
+                v.compilation_score if v.compilation_score > 0 else 0.5,
+                v.engagement_score
+            ),
+            reverse=True
+        )
+
+        return sorted_videos[:num_clips]
+
+    def create_compilation_by_subcategory(
+        self,
+        category: str,
+        subcategory: str,
+        num_clips: Optional[int] = None,
     ) -> Optional[Compilation]:
         """
-        Create a compilation from available videos in a category.
-        Returns the created Compilation or None if not enough videos.
+        Create a compilation from videos in a specific subcategory.
+        This creates thematically coherent compilations.
         """
-        # Get available videos
-        videos = self.db.get_videos_by_category(
+        # Get available videos for this subcategory
+        videos = self.db.get_videos_by_subcategory(
             category,
+            subcategory,
             status=VideoStatus.CLASSIFIED,
             unassigned_only=True,
         )
 
-        if len(videos) < self.min_clips:
+        # Filter by quality thresholds
+        quality_videos = self._filter_quality_videos(videos)
+
+        if len(quality_videos) < self.min_clips:
             logger.warning(
-                f"Not enough videos for {category} compilation "
-                f"({len(videos)} < {self.min_clips})"
+                f"Not enough quality videos for {category}/{subcategory} compilation "
+                f"({len(quality_videos)} < {self.min_clips})"
             )
             return None
 
         # Determine clip count
         if num_clips is None:
-            num_clips = min(len(videos), self.max_clips)
+            num_clips = min(len(quality_videos), self.max_clips)
         else:
-            num_clips = min(num_clips, len(videos), self.max_clips)
+            num_clips = min(num_clips, len(quality_videos), self.max_clips)
             num_clips = max(num_clips, self.min_clips)
 
-        # Select top videos by engagement (already sorted by DB query)
-        selected_videos = videos[:num_clips]
+        # Select best videos
+        selected_videos = self._select_best_videos(quality_videos, num_clips)
 
         # Generate compilation ID and title
         compilation_id = str(uuid.uuid4())[:12]
-        part_number = self._get_next_part_number(category)
-        title = categories_config.get_compilation_title(
-            category, num_clips, part_number
-        )
+        part_number = self._get_next_part_number(category, subcategory)
+
+        # Get subcategory-specific title or use category title
+        subcat_config = categories_config.get_subcategory(category, subcategory)
+        subcat_name = subcat_config.get("name", subcategory.title())
+
+        title = f"{subcat_name} Compilation #{part_number}"
 
         # Build credits text
         authors = list(set(v.author for v in selected_videos if v.author))
         credits_text = ", ".join(f"@{a}" for a in authors)
 
-        # Calculate confidence score for auto-approval
+        # Calculate scores for auto-approval
         confidence_score = self._calculate_confidence_score(selected_videos)
-        should_auto_approve = self._should_auto_approve(confidence_score)
+        compilation_quality = self._calculate_compilation_quality(selected_videos)
+        visual_independence = self._calculate_visual_independence(selected_videos)
+        should_auto_approve = self._should_auto_approve(
+            confidence_score, compilation_quality, visual_independence
+        )
 
         # Determine initial status
         initial_status = CompilationStatus.PENDING
         if should_auto_approve:
             logger.info(
                 f"Compilation {compilation_id} auto-approved "
-                f"(confidence: {confidence_score:.2f} >= {self.auto_approve_threshold})"
+                f"(confidence: {confidence_score:.2f}, quality: {compilation_quality:.2f}, "
+                f"visual: {visual_independence:.2f})"
             )
 
         # Create compilation
@@ -146,6 +291,12 @@ class GrouperService:
             status=initial_status,
             confidence_score=confidence_score,
             auto_approved=should_auto_approve,
+        )
+
+        # Store subcategory and visual independence in description for reference
+        compilation.description = (
+            f"Subcategory: {subcategory} | "
+            f"Avg visual independence: {visual_independence:.2f}"
         )
 
         # Insert compilation
@@ -161,7 +312,138 @@ class GrouperService:
             self.db.update_video(video)
 
         logger.info(
-            f"Created compilation {compilation_id}: '{title}' with {num_clips} clips"
+            f"Created {category}/{subcategory} compilation {compilation_id}: "
+            f"'{title}' with {num_clips} clips "
+            f"(quality: {compilation_quality:.2f}, visual: {visual_independence:.2f})"
+        )
+        return compilation
+
+    def create_compilation(
+        self, category: str, num_clips: Optional[int] = None
+    ) -> Optional[Compilation]:
+        """
+        Create a compilation from available videos in a category.
+        Tries to create by subcategory first for better coherence.
+        Falls back to mixed category if no single subcategory has enough videos.
+        """
+        # First, try to create a subcategory-specific compilation
+        subcategories = self.db.get_available_subcategories(
+            category,
+            min_videos=self.min_clips,
+            status=VideoStatus.CLASSIFIED,
+        )
+
+        if subcategories:
+            # Check which subcategories have enough quality videos
+            best_subcat = None
+            best_count = 0
+
+            for subcat, _ in subcategories.items():
+                videos = self.db.get_videos_by_subcategory(
+                    category, subcat,
+                    status=VideoStatus.CLASSIFIED,
+                    unassigned_only=True,
+                )
+                quality_videos = self._filter_quality_videos(videos)
+                if len(quality_videos) >= self.min_clips and len(quality_videos) > best_count:
+                    best_subcat = subcat
+                    best_count = len(quality_videos)
+
+            if best_subcat:
+                return self.create_compilation_by_subcategory(
+                    category, best_subcat, num_clips
+                )
+
+        # Fallback: Create mixed compilation from all subcategories
+        videos = self.db.get_videos_by_category(
+            category,
+            status=VideoStatus.CLASSIFIED,
+            unassigned_only=True,
+        )
+
+        # Filter by quality thresholds
+        quality_videos = self._filter_quality_videos(videos)
+
+        if len(quality_videos) < self.min_clips:
+            logger.warning(
+                f"Not enough quality videos for {category} compilation "
+                f"({len(quality_videos)} < {self.min_clips})"
+            )
+            return None
+
+        # Determine clip count
+        if num_clips is None:
+            num_clips = min(len(quality_videos), self.max_clips)
+        else:
+            num_clips = min(num_clips, len(quality_videos), self.max_clips)
+            num_clips = max(num_clips, self.min_clips)
+
+        # Select best videos
+        selected_videos = self._select_best_videos(quality_videos, num_clips)
+
+        # Generate compilation ID and title
+        compilation_id = str(uuid.uuid4())[:12]
+        part_number = self._get_next_part_number(category)
+        title = categories_config.get_compilation_title(
+            category, num_clips, part_number
+        )
+
+        # Build credits text
+        authors = list(set(v.author for v in selected_videos if v.author))
+        credits_text = ", ".join(f"@{a}" for a in authors)
+
+        # Calculate scores for auto-approval
+        confidence_score = self._calculate_confidence_score(selected_videos)
+        compilation_quality = self._calculate_compilation_quality(selected_videos)
+        visual_independence = self._calculate_visual_independence(selected_videos)
+        should_auto_approve = self._should_auto_approve(
+            confidence_score, compilation_quality, visual_independence
+        )
+
+        # Determine initial status
+        initial_status = CompilationStatus.PENDING
+        if should_auto_approve:
+            logger.info(
+                f"Compilation {compilation_id} auto-approved "
+                f"(confidence: {confidence_score:.2f}, quality: {compilation_quality:.2f}, "
+                f"visual: {visual_independence:.2f})"
+            )
+
+        # Create compilation
+        compilation = Compilation(
+            id=compilation_id,
+            category=category,
+            title=title,
+            video_ids=[v.id for v in selected_videos],
+            credits_text=credits_text,
+            status=initial_status,
+            confidence_score=confidence_score,
+            auto_approved=should_auto_approve,
+        )
+
+        # Note subcategories used and visual independence
+        subcats = set(v.subcategory for v in selected_videos if v.subcategory)
+        compilation.description = (
+            f"Mixed: {', '.join(subcats) if subcats else 'none'} | "
+            f"Avg visual independence: {visual_independence:.2f}"
+        )
+
+        # Insert compilation
+        if not self.db.insert_compilation(compilation):
+            logger.error(f"Failed to insert compilation {compilation_id}")
+            return None
+
+        # Update videos with compilation assignment
+        for order, video in enumerate(selected_videos):
+            video.compilation_id = compilation_id
+            video.clip_order = order
+            video.status = VideoStatus.GROUPED
+            self.db.update_video(video)
+
+        logger.info(
+            f"Created mixed {category} compilation {compilation_id}: "
+            f"'{title}' with {num_clips} clips "
+            f"(visual independence: {visual_independence:.2f})"
         )
         return compilation
 
@@ -170,32 +452,58 @@ class GrouperService:
     ) -> List[Compilation]:
         """
         Create multiple compilations from available videos.
-        Prioritizes categories with the most available videos.
+        Prioritizes subcategory-specific compilations for coherence.
         Returns list of created Compilations.
         """
         created = []
-        groupable = self.get_groupable_categories()
 
-        if not groupable:
-            logger.info("No categories have enough videos for compilations")
-            return created
+        # First, try subcategory-specific compilations
+        subcategory_groups = self.get_groupable_subcategories()
 
-        # Sort by available count (descending)
-        sorted_categories = sorted(
-            groupable.items(), key=lambda x: x[1], reverse=True
-        )
+        # Flatten and sort by video count
+        all_groups = []
+        for category, subcats in subcategory_groups.items():
+            for subcategory, count in subcats.items():
+                all_groups.append((category, subcategory, count))
 
-        for category, count in sorted_categories:
+        # Sort by count (most videos first)
+        all_groups.sort(key=lambda x: x[2], reverse=True)
+
+        # Create subcategory compilations first
+        for category, subcategory, count in all_groups:
             if len(created) >= max_compilations:
                 break
 
-            logger.info(f"Creating compilation for {category} ({count} available)")
-            compilation = self.create_compilation(category, num_clips_per)
+            logger.info(
+                f"Creating {category}/{subcategory} compilation ({count} quality videos available)"
+            )
+            compilation = self.create_compilation_by_subcategory(
+                category, subcategory, num_clips_per
+            )
 
             if compilation:
                 created.append(compilation)
-                # Refresh groupable counts
-                groupable = self.get_groupable_categories()
+
+        # If we still have room, try mixed category compilations
+        if len(created) < max_compilations:
+            groupable = self.get_groupable_categories()
+            sorted_categories = sorted(
+                groupable.items(), key=lambda x: x[1], reverse=True
+            )
+
+            for category, count in sorted_categories:
+                if len(created) >= max_compilations:
+                    break
+
+                # Skip if we already created a compilation for this category
+                if any(c.category == category for c in created):
+                    continue
+
+                logger.info(f"Creating mixed {category} compilation ({count} quality videos available)")
+                compilation = self.create_compilation(category, num_clips_per)
+
+                if compilation:
+                    created.append(compilation)
 
         logger.info(f"Created {len(created)} compilations")
         return created
@@ -224,3 +532,40 @@ class GrouperService:
         self.db.delete_compilation(compilation_id)
         logger.info(f"Ungrouped compilation {compilation_id}")
         return True
+
+    def get_compilation_stats(self) -> Dict:
+        """Get statistics about available videos for compilation."""
+        stats = {
+            "by_category": {},
+            "by_subcategory": {},
+            "total_available": 0,
+            "avg_visual_independence": {},
+        }
+
+        for category in categories_config.get_category_names():
+            videos = self.db.get_videos_by_category(
+                category,
+                status=VideoStatus.CLASSIFIED,
+                unassigned_only=True,
+            )
+
+            quality_videos = self._filter_quality_videos(videos)
+            stats["by_category"][category] = len(quality_videos)
+            stats["total_available"] += len(quality_videos)
+
+            # Calculate average visual independence for category
+            if quality_videos:
+                visual_scores = [v.visual_independence for v in quality_videos if v.visual_independence > 0]
+                if visual_scores:
+                    stats["avg_visual_independence"][category] = sum(visual_scores) / len(visual_scores)
+
+            # Break down by subcategory
+            subcats = {}
+            for video in quality_videos:
+                subcat = video.subcategory or "uncategorized"
+                subcats[subcat] = subcats.get(subcat, 0) + 1
+
+            if subcats:
+                stats["by_subcategory"][category] = subcats
+
+        return stats

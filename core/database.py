@@ -57,8 +57,11 @@ class Database:
                     width INTEGER DEFAULT 0,
                     height INTEGER DEFAULT 0,
                     category TEXT,
+                    subcategory TEXT,
                     category_confidence REAL DEFAULT 0,
                     classification_reasoning TEXT,
+                    compilation_score REAL DEFAULT 0,
+                    visual_independence REAL DEFAULT 0,
                     compilation_id TEXT,
                     clip_order INTEGER DEFAULT 0,
                     caption TEXT,
@@ -153,15 +156,37 @@ class Database:
         """Add new columns to existing tables for backwards compatibility."""
         # Get existing columns in compilations table
         cursor = conn.execute("PRAGMA table_info(compilations)")
-        existing_columns = {row[1] for row in cursor.fetchall()}
+        compilation_columns = {row[1] for row in cursor.fetchall()}
 
         # Add auto_approved if missing
-        if "auto_approved" not in existing_columns:
+        if "auto_approved" not in compilation_columns:
             conn.execute("ALTER TABLE compilations ADD COLUMN auto_approved INTEGER DEFAULT 0")
 
         # Add confidence_score if missing
-        if "confidence_score" not in existing_columns:
+        if "confidence_score" not in compilation_columns:
             conn.execute("ALTER TABLE compilations ADD COLUMN confidence_score REAL DEFAULT 0")
+
+        # Get existing columns in videos table
+        cursor = conn.execute("PRAGMA table_info(videos)")
+        video_columns = {row[1] for row in cursor.fetchall()}
+
+        # Add subcategory if missing
+        if "subcategory" not in video_columns:
+            conn.execute("ALTER TABLE videos ADD COLUMN subcategory TEXT DEFAULT ''")
+
+        # Add compilation_score if missing
+        if "compilation_score" not in video_columns:
+            conn.execute("ALTER TABLE videos ADD COLUMN compilation_score REAL DEFAULT 0")
+
+        # Add visual_independence if missing
+        if "visual_independence" not in video_columns:
+            conn.execute("ALTER TABLE videos ADD COLUMN visual_independence REAL DEFAULT 0")
+
+        # Create index on subcategory (after column exists)
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_videos_subcategory ON videos(subcategory)")
+        except sqlite3.OperationalError:
+            pass  # Index already exists or column missing
 
     # =========================================================================
     # Video CRUD Operations
@@ -241,6 +266,49 @@ class Database:
             query += " ORDER BY (likes + shares * 2) DESC"
             rows = conn.execute(query, params).fetchall()
             return [Video.from_db_row(dict(row)) for row in rows]
+
+    def get_videos_by_subcategory(
+        self,
+        category: str,
+        subcategory: str,
+        status: Optional[VideoStatus] = None,
+        unassigned_only: bool = False,
+    ) -> List[Video]:
+        """Get videos by category and subcategory with optional filters."""
+        with self._get_connection() as conn:
+            query = "SELECT * FROM videos WHERE category = ? AND subcategory = ?"
+            params = [category, subcategory]
+
+            if status:
+                query += " AND status = ?"
+                params.append(status.value)
+
+            if unassigned_only:
+                query += " AND (compilation_id IS NULL OR compilation_id = '')"
+
+            # Sort by compilation_score first, then engagement
+            query += " ORDER BY compilation_score DESC, (likes + shares * 2) DESC"
+            rows = conn.execute(query, params).fetchall()
+            return [Video.from_db_row(dict(row)) for row in rows]
+
+    def get_available_subcategories(
+        self,
+        category: str,
+        min_videos: int = 5,
+        status: VideoStatus = VideoStatus.CLASSIFIED,
+    ) -> dict:
+        """Get subcategories with enough videos for compilation."""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """SELECT subcategory, COUNT(*) as count FROM videos
+                   WHERE category = ? AND status = ? AND subcategory != ''
+                   AND (compilation_id IS NULL OR compilation_id = '')
+                   GROUP BY subcategory
+                   HAVING count >= ?
+                   ORDER BY count DESC""",
+                (category, status.value, min_videos)
+            ).fetchall()
+            return {row["subcategory"]: row["count"] for row in rows}
 
     def get_videos_for_compilation(self, compilation_id: str) -> List[Video]:
         """Get all videos assigned to a compilation, ordered by clip_order."""

@@ -79,9 +79,12 @@ class Video:
     height: int = 0
 
     # Classification
-    category: str = ""                   # One of 8 categories
+    category: str = ""                   # fails | comedy
+    subcategory: str = ""                # physical | reaction | prank | verbal | social | skill
     category_confidence: float = 0.0     # 0-1 confidence score
     classification_reasoning: str = ""   # GPT's reasoning
+    compilation_score: float = 0.0       # 0-1 suitability for compilation
+    visual_independence: float = 0.0     # 0-1 funny without audio/context
 
     # Compilation assignment
     compilation_id: str = ""             # Which compilation this belongs to
@@ -132,8 +135,11 @@ class Video:
             width=row.get("width", 0),
             height=row.get("height", 0),
             category=row.get("category", ""),
+            subcategory=row.get("subcategory", ""),
             category_confidence=row.get("category_confidence", 0.0),
             classification_reasoning=row.get("classification_reasoning", ""),
+            compilation_score=row.get("compilation_score", 0.0),
+            visual_independence=row.get("visual_independence", 0.0),
             compilation_id=row.get("compilation_id", ""),
             clip_order=row.get("clip_order", 0),
             caption=row.get("caption", ""),
@@ -160,8 +166,11 @@ class Video:
             "width": self.width,
             "height": self.height,
             "category": self.category,
+            "subcategory": self.subcategory,
             "category_confidence": self.category_confidence,
             "classification_reasoning": self.classification_reasoning,
+            "compilation_score": self.compilation_score,
+            "visual_independence": self.visual_independence,
             "compilation_id": self.compilation_id,
             "clip_order": self.clip_order,
             "caption": self.caption,
