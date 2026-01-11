@@ -34,10 +34,11 @@ logger = logging.getLogger("daemon")
 class PipelineDaemon:
     """Manages the pipeline scheduler as a daemon process."""
 
-    def __init__(self, aggressive: bool = False):
+    def __init__(self, aggressive: bool = False, mega: bool = False):
         """Initialize daemon."""
         self.scheduler = PipelineScheduler()
         self.aggressive = aggressive
+        self.mega = mega
         self._running = False
 
     def _signal_handler(self, signum, frame):
@@ -56,7 +57,10 @@ class PipelineDaemon:
         settings.ensure_directories()
 
         # Configure schedule
-        if self.aggressive:
+        if self.mega:
+            logger.info("Using MEGA-COMPILATION schedule")
+            self.scheduler.configure_mega_compilation_schedule()
+        elif self.aggressive:
             logger.info("Using AGGRESSIVE schedule")
             self.scheduler.configure_aggressive_schedule()
         else:
@@ -106,6 +110,22 @@ class PipelineDaemon:
             logger.error(f"Pipeline run failed: {e}")
             return 1
 
+    def run_mega_once(self):
+        """Run the mega-compilation pipeline once and exit."""
+        logger.info("=" * 60)
+        logger.info("RUNNING MEGA-COMPILATION PIPELINE (ONE-SHOT)")
+        logger.info("=" * 60)
+
+        settings.ensure_directories()
+
+        try:
+            self.scheduler.job_mega_compilation_pipeline()
+            logger.info("Mega-compilation pipeline run complete.")
+            return 0
+        except Exception as e:
+            logger.error(f"Mega-compilation pipeline run failed: {e}")
+            return 1
+
 
 def main():
     """Main entry point."""
@@ -114,9 +134,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    python daemon.py                    Start with default schedule
+    python daemon.py                    Start with default schedule (individual clips)
     python daemon.py --aggressive       Start with aggressive schedule
+    python daemon.py --mega             Start with mega-compilation schedule
     python daemon.py --run-now          Run full pipeline once and exit
+    python daemon.py --run-mega         Run mega-compilation pipeline once and exit
     python daemon.py --status           Show current pipeline status
         """,
     )
@@ -127,9 +149,19 @@ Examples:
         help="Use aggressive schedule (faster, higher throughput)",
     )
     parser.add_argument(
+        "--mega",
+        action="store_true",
+        help="Use mega-compilation schedule (source compilations pipeline)",
+    )
+    parser.add_argument(
         "--run-now",
         action="store_true",
         help="Run full pipeline once and exit",
+    )
+    parser.add_argument(
+        "--run-mega",
+        action="store_true",
+        help="Run mega-compilation pipeline once and exit",
     )
     parser.add_argument(
         "--status",
@@ -169,7 +201,7 @@ Examples:
 
     args = parser.parse_args()
 
-    daemon = PipelineDaemon(aggressive=args.aggressive)
+    daemon = PipelineDaemon(aggressive=args.aggressive, mega=args.mega)
 
     # Handle single-job runs
     if args.status:
@@ -178,6 +210,9 @@ Examples:
 
     if args.run_now:
         return daemon.run_once()
+
+    if args.run_mega:
+        return daemon.run_mega_once()
 
     if args.discover:
         logger.info("Running discovery job...")

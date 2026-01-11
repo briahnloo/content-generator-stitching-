@@ -4,6 +4,11 @@ Fully automated pipeline that discovers trending TikTok videos, categorizes them
 
 ## What It Does
 
+The pipeline supports **two modes** for creating viral compilations:
+
+### Mode 1: Individual Clips Pipeline
+Discovers individual viral clips and combines them into compilations.
+
 ```
 ┌─────────────┐    ┌──────────────┐    ┌─────────────┐    ┌─────────────┐
 │  Discovery  │───▶│   Download   │───▶│  Classify   │───▶│    Group    │
@@ -17,7 +22,17 @@ Fully automated pipeline that discovers trending TikTok videos, categorizes them
 └─────────────┘    └──────────────┘    └─────────────┘    └─────────────┘
 ```
 
-**End-to-end flow:**
+### Mode 2: Source Compilations Pipeline (Mega-Compilations)
+Finds existing TikTok compilations and stitches them into longer mega-compilations.
+
+```
+┌─────────────────┐    ┌──────────────┐    ┌─────────────┐    ┌─────────────┐
+│  Discover       │───▶│   Download   │───▶│    Group    │───▶│   Render    │
+│  Compilations   │    │   (yt-dlp)   │    │  (by type)  │    │  (FFmpeg)   │
+└─────────────────┘    └──────────────┘    └─────────────┘    └─────────────┘
+```
+
+**Individual Clips Flow:**
 
 1. **Discover** - Scrapes trending TikTok videos via Apify API
 2. **Download** - Downloads videos using yt-dlp with metadata
@@ -27,6 +42,13 @@ Fully automated pipeline that discovers trending TikTok videos, categorizes them
 6. **Auto-Approve** - High-confidence compilations skip manual review
 7. **Route** - Matches content to appropriate platform accounts
 8. **Upload** - Publishes to YouTube and/or TikTok automatically
+
+**Source Compilations Flow:**
+
+1. **Discover Compilations** - Finds existing TikTok compilation videos (top 10s, fail compilations, etc.)
+2. **Download** - Downloads the full compilation videos
+3. **Group** - Combines multiple source compilations into mega-compilations
+4. **Render** - Stitches source compilations together with transitions
 
 ---
 
@@ -237,23 +259,112 @@ python daemon.py
 
 ## CLI Reference
 
-### Pipeline Commands
+### Quick Command Reference
+
+| Command | Description |
+|---------|-------------|
+| `run` | Full pipeline for individual clips (discover → classify → group → stitch) |
+| `run-compilations` | Full pipeline for source compilations (download → group → stitch) |
+| `discover` | Find individual viral TikTok clips |
+| `discover-compilations` | Find existing TikTok compilation videos |
+| `classify` | AI categorize downloaded clips |
+| `group` | Group clips into compilations |
+| `stitch` | Render compilations to video files |
+| `review` | List compilations ready for review |
+| `approve <id>` | Approve a compilation for upload |
+| `reject <id>` | Reject a compilation |
+| `upload <id>` | Upload compilation to YouTube |
+| `status` | Show pipeline statistics |
+| `list-compilations` | List all compilations |
+| `list-source-compilations` | List discovered source compilations |
+
+---
+
+### Two Pipeline Modes
+
+The pipeline supports two modes for creating compilations:
+
+| Mode | Command | Description |
+|------|---------|-------------|
+| **Individual Clips** | `run` | Discovers individual viral clips, classifies them, groups similar clips together |
+| **Source Compilations** | `run-compilations` | Finds existing TikTok compilations and stitches them into mega-compilations |
+
+---
+
+### Individual Clips Pipeline (Standard)
+
+Discovers individual viral TikTok clips, downloads them, classifies by category, groups similar clips, and stitches into compilations.
 
 ```bash
-# Full pipeline run
-python cli.py run --discover-limit 50 --compilations 3
+# Full pipeline: discover -> download -> classify -> group -> stitch
+python cli.py run --discover-limit 50 --compilations 2
 
-# Individual stages
-python cli.py discover --limit 50      # Find videos
-python cli.py classify                  # Categorize videos
-python cli.py group --compilations 3    # Create compilations
-python cli.py stitch                    # Render videos
+# With specific hashtag
+python cli.py run -d 50 -c 2 --hashtag fails
+```
 
-# Review workflow
-python cli.py review                    # List ready for review
-python cli.py approve <id>              # Approve compilation
+**Individual stages:**
+
+```bash
+python cli.py discover --limit 50       # Find individual viral clips
+python cli.py classify                   # AI categorizes each clip
+python cli.py group --compilations 3     # Group clips into compilations
+python cli.py stitch                     # Render final videos
+```
+
+---
+
+### Source Compilations Pipeline (Mega-Compilations)
+
+Discovers existing TikTok compilations (videos that are already compilations), downloads them, and stitches multiple compilations together into longer mega-compilations.
+
+```bash
+# Full pipeline: download sources -> group -> stitch
+python cli.py run-compilations --compilations 2
+
+# With more sources per mega-compilation
+python cli.py run-compilations -c 2 --sources-per 4
+
+# Only use fails-type compilations
+python cli.py run-compilations -c 2 --type fails
+```
+
+**Individual stages:**
+
+```bash
+# Discover existing compilations on TikTok
+python cli.py discover-compilations --limit 30
+
+# Discover with LLM verification and download
+python cli.py discover-compilations -l 30 --classify --download
+
+# Discover only fails compilations
+python cli.py discover-compilations -l 20 --type fails
+
+# List all discovered source compilations
+python cli.py list-source-compilations
+```
+
+---
+
+### Review & Upload Workflow
+
+```bash
+python cli.py review                    # List compilations ready for review
+python cli.py approve <id>              # Approve compilation for upload
 python cli.py reject <id>               # Reject compilation
-python cli.py upload <id>               # Manual upload
+python cli.py upload <id>               # Manual upload to YouTube
+python cli.py upload <id> --public      # Upload as public (default: private)
+```
+
+---
+
+### Status & Monitoring
+
+```bash
+python cli.py status                    # Show pipeline statistics
+python cli.py list-compilations         # List all compilations with status
+python cli.py list-source-compilations  # List discovered source compilations
 ```
 
 ### Account Management

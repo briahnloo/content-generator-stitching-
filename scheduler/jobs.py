@@ -343,6 +343,79 @@ class PipelineScheduler:
         logger.info("Full pipeline complete")
 
     # =========================================================================
+    # Mega-Compilation Jobs (Source Compilations Pipeline)
+    # =========================================================================
+
+    def job_discover_source_compilations(self) -> None:
+        """Discover existing TikTok compilation videos."""
+        logger.info("Running source compilation discovery job...")
+        try:
+            compilations, skipped = self.discovery.discover_compilations(limit=30)
+            logger.info(
+                f"Source compilation discovery complete: {len(compilations)} new, "
+                f"{skipped} skipped"
+            )
+        except Exception as e:
+            logger.error(f"Source compilation discovery job failed: {e}")
+
+    def job_download_source_compilations(self) -> None:
+        """Download discovered source compilations."""
+        logger.info("Running source compilation download job...")
+        try:
+            # Get discovered source compilations that need downloading
+            source_comps = self.db.get_source_compilations(
+                status=VideoStatus.DISCOVERED,
+                limit=10
+            )
+
+            if not source_comps:
+                logger.info("No source compilations to download")
+                return
+
+            success = 0
+            fail = 0
+            for video in source_comps:
+                if self.downloader.download(video):
+                    success += 1
+                else:
+                    fail += 1
+
+            logger.info(
+                f"Source compilation download complete: {success} succeeded, "
+                f"{fail} failed"
+            )
+        except Exception as e:
+            logger.error(f"Source compilation download job failed: {e}")
+
+    def job_create_mega_compilations(self) -> None:
+        """Create mega-compilations from downloaded source compilations."""
+        logger.info("Running mega-compilation creation job...")
+        try:
+            compilations = self.grouper.create_mega_compilations(
+                max_compilations=2,
+                num_sources_per=4
+            )
+            logger.info(f"Created {len(compilations)} mega-compilations")
+        except Exception as e:
+            logger.error(f"Mega-compilation creation job failed: {e}")
+
+    def job_mega_compilation_pipeline(self) -> None:
+        """
+        Run the full mega-compilation pipeline in sequence.
+        Discovers existing compilations, downloads, groups, renders, and routes.
+        """
+        logger.info("Running mega-compilation pipeline...")
+
+        self.job_discover_source_compilations()
+        self.job_download_source_compilations()
+        self.job_create_mega_compilations()
+        self.job_render_compilations()  # Reuse existing render job
+        self.job_route_uploads()
+        self.job_process_uploads()
+
+        logger.info("Mega-compilation pipeline complete")
+
+    # =========================================================================
     # Scheduler Configuration
     # =========================================================================
 
@@ -519,6 +592,85 @@ class PipelineScheduler:
         )
 
         logger.info("Configured aggressive schedule with 9 jobs")
+
+    def configure_mega_compilation_schedule(self) -> None:
+        """
+        Configure schedule for mega-compilation pipeline only.
+        This discovers existing TikTok compilations and stitches them together.
+        """
+        # Discover source compilations: Every 6 hours
+        self.scheduler.add_job(
+            self.job_discover_source_compilations,
+            IntervalTrigger(hours=6),
+            id="discover_source_compilations",
+            name="Discover source compilations",
+            replace_existing=True,
+        )
+
+        # Download source compilations: Every 2 hours
+        self.scheduler.add_job(
+            self.job_download_source_compilations,
+            IntervalTrigger(hours=2),
+            id="download_source_compilations",
+            name="Download source compilations",
+            replace_existing=True,
+        )
+
+        # Create mega-compilations: Every 4 hours
+        self.scheduler.add_job(
+            self.job_create_mega_compilations,
+            IntervalTrigger(hours=4),
+            id="create_mega_compilations",
+            name="Create mega-compilations",
+            replace_existing=True,
+        )
+
+        # Render: Every 2 hours
+        self.scheduler.add_job(
+            self.job_render_compilations,
+            IntervalTrigger(hours=2),
+            id="render_compilations",
+            name="Render compilations",
+            replace_existing=True,
+        )
+
+        # Route uploads: Every hour
+        self.scheduler.add_job(
+            self.job_route_uploads,
+            IntervalTrigger(hours=1),
+            id="route_uploads",
+            name="Route uploads to accounts",
+            replace_existing=True,
+        )
+
+        # Process uploads: Every 6 hours (4 times per day)
+        self.scheduler.add_job(
+            self.job_process_uploads,
+            IntervalTrigger(hours=6),
+            id="process_uploads",
+            name="Process pending uploads",
+            replace_existing=True,
+        )
+
+        # Retry failed: Every 2 hours
+        self.scheduler.add_job(
+            self.job_retry_failed_uploads,
+            IntervalTrigger(hours=2),
+            id="retry_uploads",
+            name="Retry failed uploads",
+            replace_existing=True,
+        )
+
+        # Reset daily limits: At midnight
+        self.scheduler.add_job(
+            self.job_reset_daily_limits,
+            CronTrigger(hour=0, minute=0),
+            id="reset_limits",
+            name="Reset daily upload limits",
+            replace_existing=True,
+        )
+
+        logger.info("Configured mega-compilation schedule with 8 jobs")
 
     def start(self) -> None:
         """Start the scheduler."""
