@@ -14,7 +14,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from core.database import Database
 from core.models import (
     VideoStatus, CompilationStatus, Platform, UploadStatus,
-    Upload, Account, Compilation
+    Upload, Account, Compilation, ContentStrategy
 )
 from config.settings import settings
 from services.discovery import DiscoveryService
@@ -48,6 +48,9 @@ class PipelineScheduler:
         self._upload_router: Optional[UploadRouter] = None
         self._youtube_uploader: Optional[YouTubeUploader] = None
         self._tiktok_uploader: Optional[TikTokUploader] = None
+
+        # Auto-create default account from .env if no accounts exist
+        self._ensure_default_account()
 
     # =========================================================================
     # Lazy Service Initialization
@@ -108,6 +111,54 @@ class PipelineScheduler:
         return self._tiktok_uploader
 
     # =========================================================================
+    # Account Initialization
+    # =========================================================================
+
+    def _ensure_default_account(self) -> None:
+        """
+        Automatically create a default YouTube account from .env credentials
+        if no YouTube accounts exist in the database.
+        """
+        try:
+            # Check if any YouTube accounts exist
+            existing_accounts = self.db.get_accounts_by_platform(Platform.YOUTUBE, active_only=False)
+            
+            if existing_accounts:
+                # Accounts already exist, no need to create
+                return
+
+            # Check if .env credentials are available
+            if not (settings.YOUTUBE_CLIENT_ID and 
+                    settings.YOUTUBE_CLIENT_SECRET and 
+                    settings.YOUTUBE_REFRESH_TOKEN):
+                logger.info("No YouTube accounts found and .env credentials not set - skipping auto-account creation")
+                return
+
+            # Create default account
+            logger.info("No YouTube accounts found - creating default account from .env credentials")
+            account = self.account_manager.create_account(
+                platform=Platform.YOUTUBE,
+                name="Default YouTube Account",
+                strategy=ContentStrategy.MIXED,
+                daily_limit=3,
+            )
+
+            # Store credentials from .env
+            credentials = {
+                "client_id": settings.YOUTUBE_CLIENT_ID,
+                "client_secret": settings.YOUTUBE_CLIENT_SECRET,
+                "refresh_token": settings.YOUTUBE_REFRESH_TOKEN,
+            }
+
+            if self.account_manager.set_credentials(account.id, credentials):
+                logger.info(f"Successfully created default YouTube account: {account.id}")
+            else:
+                logger.error("Failed to store credentials for default account")
+
+        except Exception as e:
+            logger.error(f"Failed to create default account: {e}")
+
+    # =========================================================================
     # Job Definitions
     # =========================================================================
 
@@ -124,7 +175,7 @@ class PipelineScheduler:
         """Download discovered videos."""
         logger.info("Running download job...")
         try:
-            success, fail = self.downloader.download_pending(limit=20)
+            success, fail = self.downloader.download_discovered(limit=20)
             logger.info(f"Download complete: {success} succeeded, {fail} failed")
         except Exception as e:
             logger.error(f"Download job failed: {e}")

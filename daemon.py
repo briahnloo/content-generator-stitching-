@@ -63,21 +63,21 @@ class PipelineDaemon:
             logger.info("Using DEFAULT schedule")
             self.scheduler.configure_default_schedule()
 
-        # Print job schedule
+        # Register signal handlers
+        signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGTERM, self._signal_handler)
+
+        # Start scheduler first (needed for next_run_time to be available)
+        self.scheduler.start()
+        self._running = True
+
+        # Print job schedule (after scheduler starts)
         logger.info("-" * 60)
         logger.info("Scheduled jobs:")
         for job in self.scheduler.get_jobs():
             next_run = job.next_run_time.strftime("%H:%M:%S") if job.next_run_time else "N/A"
             logger.info(f"  - {job.name}: next run at {next_run}")
         logger.info("-" * 60)
-
-        # Register signal handlers
-        signal.signal(signal.SIGINT, self._signal_handler)
-        signal.signal(signal.SIGTERM, self._signal_handler)
-
-        # Start scheduler
-        self.scheduler.start()
-        self._running = True
 
         logger.info("Daemon started. Press Ctrl+C to stop.")
 

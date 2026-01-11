@@ -8,6 +8,7 @@ import random
 import shutil
 import subprocess
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
@@ -327,7 +328,9 @@ class StitcherService:
                 if progress_callback:
                     progress_callback(total_steps, total_steps, "Concatenating clips")
 
-                output_path = self.review_dir / f"{compilation.id}.mp4"
+                # Add timestamp prefix for chronological sorting (YYYYMMDD-HHMMSS)
+                timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                output_path = self.review_dir / f"{timestamp}-{compilation.id}.mp4"
 
                 if not self._concatenate_clips(clip_paths, output_path, music_path):
                     logger.error("Failed to concatenate clips")
