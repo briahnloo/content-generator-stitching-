@@ -348,6 +348,54 @@ class CategoriesConfig:
             "low_visual_independence": []
         })
 
+    # =========================================================================
+    # Compilation Discovery Config
+    # =========================================================================
+
+    @classmethod
+    def get_compilation_discovery_config(cls) -> dict:
+        """Get full compilation discovery configuration."""
+        return cls._load().get("compilation_discovery", {
+            "hashtags": ["compilation", "failscompilation", "trynottolaugh"],
+            "description_patterns": ["top\\s*\\d+", "compilation"],
+            "author_patterns": ["compilation", "fails", "daily"],
+            "min_duration_seconds": 45,
+            "max_duration_seconds": 300,
+            "preferred_min_duration": 60,
+            "preferred_max_duration": 180,
+            "min_quality_score": 0.6,
+            "min_estimated_clips": 3,
+        })
+
+    @classmethod
+    def get_compilation_hashtags(cls) -> List[str]:
+        """Get hashtags for discovering existing compilations."""
+        config = cls.get_compilation_discovery_config()
+        return config.get("hashtags", [])
+
+    @classmethod
+    def get_compilation_description_patterns(cls) -> List[str]:
+        """Get regex patterns for identifying compilation descriptions."""
+        config = cls.get_compilation_discovery_config()
+        return config.get("description_patterns", [])
+
+    @classmethod
+    def get_compilation_author_patterns(cls) -> List[str]:
+        """Get patterns for identifying compilation creator accounts."""
+        config = cls.get_compilation_discovery_config()
+        return config.get("author_patterns", [])
+
+    @classmethod
+    def get_compilation_duration_limits(cls) -> dict:
+        """Get duration limits for compilation discovery."""
+        config = cls.get_compilation_discovery_config()
+        return {
+            "min": config.get("min_duration_seconds", 45),
+            "max": config.get("max_duration_seconds", 300),
+            "preferred_min": config.get("preferred_min_duration", 60),
+            "preferred_max": config.get("preferred_max_duration", 180),
+        }
+
 
 # Singleton instance
 settings = Settings()

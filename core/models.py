@@ -86,6 +86,11 @@ class Video:
     compilation_score: float = 0.0       # 0-1 suitability for compilation
     visual_independence: float = 0.0     # 0-1 funny without audio/context
 
+    # Source compilation tracking (for videos that are already compilations)
+    is_source_compilation: bool = False  # True if this is an existing compilation we're sourcing
+    source_clip_count: int = 0           # Estimated number of clips in the source compilation
+    compilation_type: str = ""           # fails | comedy | satisfying | mixed
+
     # Compilation assignment
     compilation_id: str = ""             # Which compilation this belongs to
     clip_order: int = 0                  # Position in compilation
@@ -140,6 +145,9 @@ class Video:
             classification_reasoning=row.get("classification_reasoning", ""),
             compilation_score=row.get("compilation_score", 0.0),
             visual_independence=row.get("visual_independence", 0.0),
+            is_source_compilation=bool(row.get("is_source_compilation", False)),
+            source_clip_count=row.get("source_clip_count", 0),
+            compilation_type=row.get("compilation_type", ""),
             compilation_id=row.get("compilation_id", ""),
             clip_order=row.get("clip_order", 0),
             caption=row.get("caption", ""),
@@ -171,6 +179,9 @@ class Video:
             "classification_reasoning": self.classification_reasoning,
             "compilation_score": self.compilation_score,
             "visual_independence": self.visual_independence,
+            "is_source_compilation": int(self.is_source_compilation),
+            "source_clip_count": self.source_clip_count,
+            "compilation_type": self.compilation_type,
             "compilation_id": self.compilation_id,
             "clip_order": self.clip_order,
             "caption": self.caption,

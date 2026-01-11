@@ -615,3 +615,201 @@ class ClassifierService:
 
         logger.info(f"Visual independence reclassification: {reclassified} changed, {unchanged} unchanged")
         return reclassified, unchanged
+
+    # =========================================================================
+    # Compilation Classification - Verify and score source compilations
+    # =========================================================================
+
+    def classify_compilation(self, video: Video) -> dict:
+        """
+        Classify a video that's been flagged as a potential source compilation.
+        Verifies it's actually a compilation and scores its quality.
+
+        Returns dict with:
+        - is_compilation: bool
+        - compilation_type: fails|comedy|satisfying|mixed
+        - quality_score: 0-1
+        - estimated_clips: int
+        - has_countdown: bool
+        - reasoning: str
+        """
+        prompt = """You are evaluating if this TikTok video is an EXISTING COMPILATION suitable for re-use.
+
+A COMPILATION is a video with multiple distinct clips/moments edited together by the original creator.
+
+WHAT MAKES A GOOD SOURCE COMPILATION:
+✓ Multiple distinct clips edited together (3+ clips)
+✓ Consistent theme (all fails, all funny moments, etc.)
+✓ Clean transitions between clips
+✓ Good visual quality
+✓ May have countdown numbers (5, 4, 3, 2, 1)
+✓ Duration 45-180 seconds ideal
+
+REJECT THESE:
+✗ Single-moment videos (not compilations)
+✗ Slideshows or photo compilations
+✗ Reaction videos watching compilations
+✗ Low quality or heavily watermarked
+✗ Talking/commentary videos
+✗ Music videos or dance compilations
+
+Analyze this video metadata and determine:
+1. Is it actually a compilation? (multiple clips edited together)
+2. What type? (fails, comedy, satisfying, mixed)
+3. Quality score (0-1) for re-use
+4. Estimated number of clips
+5. Does it have visible countdown/numbers?
+
+Response JSON only:
+{
+  "is_compilation": true/false,
+  "compilation_type": "fails|comedy|satisfying|mixed|none",
+  "quality_score": 0.0-1.0,
+  "estimated_clips": 3-20,
+  "has_countdown": true/false,
+  "reasoning": "brief explanation"
+}"""
+
+        user_prompt = self._build_user_prompt(video)
+        user_prompt += f"\nDuration: {video.duration:.0f} seconds"
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.1,
+                max_tokens=200,
+            )
+
+            response_text = response.choices[0].message.content
+            return self._parse_compilation_response(response_text)
+
+        except Exception as e:
+            logger.error(f"Compilation classification failed for {video.id}: {e}")
+            return {
+                "is_compilation": False,
+                "compilation_type": "none",
+                "quality_score": 0.0,
+                "estimated_clips": 0,
+                "has_countdown": False,
+                "reasoning": f"Error: {e}",
+            }
+
+    def _parse_compilation_response(self, response_text: str) -> dict:
+        """Parse GPT response for compilation classification."""
+        try:
+            text = response_text.strip()
+            if text.startswith("```"):
+                text = text.split("```")[1]
+                if text.startswith("json"):
+                    text = text[4:]
+                text = text.strip()
+
+            data = json.loads(text)
+
+            return {
+                "is_compilation": bool(data.get("is_compilation", False)),
+                "compilation_type": data.get("compilation_type", "none").lower(),
+                "quality_score": max(0.0, min(1.0, float(data.get("quality_score", 0)))),
+                "estimated_clips": max(0, int(data.get("estimated_clips", 0))),
+                "has_countdown": bool(data.get("has_countdown", False)),
+                "reasoning": data.get("reasoning", ""),
+            }
+
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+            logger.warning(f"Failed to parse compilation response: {e}")
+            return {
+                "is_compilation": False,
+                "compilation_type": "none",
+                "quality_score": 0.0,
+                "estimated_clips": 0,
+                "has_countdown": False,
+                "reasoning": f"Parse error: {e}",
+            }
+
+    def classify_compilation_and_update(
+        self, video: Video, min_quality_score: float = 0.6
+    ) -> bool:
+        """
+        Classify a source compilation video and update the database.
+        Returns True if verified as a good compilation.
+        """
+        result = self.classify_compilation(video)
+
+        # Update video with classification results
+        video.is_source_compilation = result["is_compilation"]
+        video.compilation_type = result["compilation_type"]
+        video.source_clip_count = result["estimated_clips"]
+        video.compilation_score = result["quality_score"]
+        video.classification_reasoning = result["reasoning"]
+
+        if not result["is_compilation"]:
+            video.status = VideoStatus.SKIPPED
+            video.is_source_compilation = False
+            logger.info(f"Video {video.id} is not a compilation: {result['reasoning']}")
+            self.db.update_video(video)
+            return False
+
+        if result["quality_score"] < min_quality_score:
+            video.status = VideoStatus.SKIPPED
+            logger.info(
+                f"Compilation {video.id} quality too low: {result['quality_score']:.2f}"
+            )
+            self.db.update_video(video)
+            return False
+
+        # Good compilation - mark as classified
+        video.status = VideoStatus.CLASSIFIED
+        video.category = result["compilation_type"]
+        logger.info(
+            f"Verified compilation {video.id}: {result['compilation_type']} "
+            f"(~{result['estimated_clips']} clips, quality: {result['quality_score']:.2f})"
+        )
+        self.db.update_video(video)
+        return True
+
+    def classify_source_compilations(
+        self,
+        limit: Optional[int] = None,
+        min_quality_score: float = 0.6,
+        progress_callback: Optional[callable] = None,
+    ) -> Tuple[int, int, int]:
+        """
+        Classify all discovered source compilations.
+        Returns (verified_count, rejected_count, failed_count).
+        """
+        # Get videos that are flagged as source compilations but not yet classified
+        videos = self.db.get_source_compilations(
+            status=VideoStatus.DISCOVERED,
+            limit=limit
+        )
+
+        logger.info(f"Found {len(videos)} source compilations to classify")
+
+        verified = 0
+        rejected = 0
+        failed = 0
+
+        for i, video in enumerate(videos):
+            if progress_callback:
+                progress_callback(i + 1, len(videos), video)
+
+            try:
+                if self.classify_compilation_and_update(video, min_quality_score):
+                    verified += 1
+                else:
+                    rejected += 1
+            except Exception as e:
+                logger.error(f"Failed to classify compilation {video.id}: {e}")
+                video.status = VideoStatus.FAILED
+                video.error = str(e)
+                self.db.update_video(video)
+                failed += 1
+
+        logger.info(
+            f"Compilation classification: {verified} verified, {rejected} rejected, {failed} failed"
+        )
+        return verified, rejected, failed

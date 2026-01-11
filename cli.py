@@ -79,6 +79,242 @@ def discover(limit: int, hashtag: str, no_download: bool):
         click.echo(f"  Download failed: {stats['download_failed']}")
 
 
+@cli.command()
+@click.option("--limit", "-l", default=30, help="Max compilations to discover")
+@click.option("--type", "-t", "comp_type", default=None,
+              type=click.Choice(["fails", "comedy", "satisfying"]),
+              help="Specific compilation type")
+@click.option("--classify", "-c", is_flag=True, help="Run LLM classification on discovered compilations")
+@click.option("--download", "-d", is_flag=True, help="Download discovered compilations")
+def discover_compilations(limit: int, comp_type: str, classify: bool, download: bool):
+    """Discover existing TikTok compilations to stitch together.
+
+    Finds videos that are already compilations (multiple clips edited together)
+    based on metadata patterns like 'top 10', 'compilation', countdown numbers, etc.
+    """
+    pipeline = get_pipeline()
+
+    click.echo("Discovering existing TikTok compilations...")
+    click.echo(f"  Limit: {limit}")
+    if comp_type:
+        click.echo(f"  Type: {comp_type}")
+
+    # Discover compilations
+    from services.discovery import DiscoveryService
+    discovery = DiscoveryService(pipeline.db)
+
+    if comp_type:
+        compilations, skipped = discovery.discover_compilations_by_type(comp_type, limit)
+    else:
+        compilations, skipped = discovery.discover_compilations(limit)
+
+    click.echo(f"\nDiscovery Results:")
+    click.echo(f"  Found: {len(compilations)} compilations")
+    click.echo(f"  Skipped: {skipped} (duplicates/non-compilations)")
+
+    if not compilations:
+        click.echo("\nNo compilations found.")
+        return
+
+    # Show found compilations
+    click.echo(f"\nDiscovered Compilations:")
+    for comp in compilations:
+        click.echo(f"  - {comp.id[:8]}: {comp.compilation_type or 'mixed'} "
+                   f"(~{comp.source_clip_count} clips, {comp.duration:.0f}s)")
+        if comp.description:
+            desc_preview = comp.description[:60] + "..." if len(comp.description) > 60 else comp.description
+            click.echo(f"    {desc_preview}")
+
+    # Optional: LLM classification for quality verification
+    if classify:
+        click.echo(f"\nClassifying compilations with LLM...")
+        from services.classifier import ClassifierService
+        classifier = ClassifierService(pipeline.db)
+
+        verified = 0
+        rejected = 0
+
+        with tqdm(total=len(compilations), desc="Verifying", unit="video") as pbar:
+            for comp in compilations:
+                result = classifier.classify_compilation_and_update(comp)
+                if result:
+                    verified += 1
+                else:
+                    rejected += 1
+                pbar.update(1)
+
+        click.echo(f"\nClassification Results:")
+        click.echo(f"  Verified: {verified}")
+        click.echo(f"  Rejected: {rejected}")
+
+    # Optional: Download
+    if download:
+        click.echo(f"\nDownloading compilations...")
+        from services.downloader import DownloaderService
+        downloader = DownloaderService(pipeline.db)
+
+        downloaded = 0
+        failed = 0
+
+        with tqdm(total=len(compilations), desc="Downloading", unit="video") as pbar:
+            for comp in compilations:
+                success = downloader.download(comp)
+                if success:
+                    downloaded += 1
+                else:
+                    failed += 1
+                pbar.update(1)
+
+        click.echo(f"\nDownload Results:")
+        click.echo(f"  Downloaded: {downloaded}")
+        click.echo(f"  Failed: {failed}")
+
+
+@cli.command()
+@click.option("--compilations", "-c", default=2, help="Number of mega-compilations to create")
+@click.option("--sources-per", "-s", default=None, type=int, help="Source compilations per mega-compilation")
+@click.option("--type", "-t", "comp_type", default=None,
+              type=click.Choice(["fails", "comedy", "satisfying", "mixed"]),
+              help="Only use sources of this type")
+def run_compilations(compilations: int, sources_per: int, comp_type: str):
+    """Run full pipeline for source compilations: download -> group -> stitch.
+
+    This takes discovered source compilations (existing TikTok compilations),
+    downloads them, groups them into mega-compilations, and stitches them together.
+
+    Example:
+        python cli.py run-compilations --compilations 2 --sources-per 4
+    """
+    pipeline = get_pipeline()
+
+    click.echo("Starting source compilation pipeline...")
+    click.echo(f"  Max mega-compilations: {compilations}")
+    if sources_per:
+        click.echo(f"  Sources per compilation: {sources_per}")
+    if comp_type:
+        click.echo(f"  Type filter: {comp_type}")
+    click.echo()
+
+    # Step 1: Download discovered source compilations that haven't been downloaded
+    from core.models import VideoStatus
+    from services.downloader import DownloaderService
+
+    discovered = pipeline.db.get_source_compilations(status=VideoStatus.DISCOVERED)
+    if comp_type:
+        discovered = [v for v in discovered if (v.compilation_type or "mixed") == comp_type]
+
+    if discovered:
+        click.echo(f"Downloading {len(discovered)} source compilations...")
+        downloader = DownloaderService(pipeline.db)
+
+        downloaded = 0
+        failed = 0
+
+        with tqdm(total=len(discovered), desc="Downloading", unit="video") as pbar:
+            for video in discovered:
+                if downloader.download(video):
+                    downloaded += 1
+                else:
+                    failed += 1
+                pbar.update(1)
+
+        click.echo(f"  Downloaded: {downloaded}")
+        click.echo(f"  Failed: {failed}")
+    else:
+        click.echo("No new source compilations to download.")
+
+    # Step 2: Show available sources
+    from services.grouper import GrouperService
+    grouper = GrouperService(pipeline.db)
+
+    available = grouper.get_groupable_source_compilations()
+    if not available:
+        click.echo("\nNo downloaded source compilations available for grouping.")
+        click.echo("Run 'discover-compilations -d' to discover and download more.")
+        return
+
+    click.echo(f"\nAvailable source compilations:")
+    for type_name, count in sorted(available.items()):
+        click.echo(f"  {type_name}: {count}")
+
+    # Step 3: Create mega-compilations
+    click.echo(f"\nCreating up to {compilations} mega-compilations...")
+
+    if comp_type:
+        # Create for specific type
+        created = []
+        for _ in range(compilations):
+            comp = grouper.create_mega_compilation(comp_type, sources_per)
+            if comp:
+                created.append(comp)
+            else:
+                break
+    else:
+        created = grouper.create_mega_compilations(compilations, sources_per)
+
+    if not created:
+        click.echo("No mega-compilations created (need at least 2 source compilations).")
+        return
+
+    click.echo(f"\nCreated {len(created)} mega-compilations:")
+    for comp in created:
+        click.echo(f"  {comp.id}: {comp.title} ({len(comp.video_ids)} sources)")
+
+    # Step 4: Stitch
+    click.echo(f"\nStitching mega-compilations...")
+    success, fail = pipeline.stitch()
+
+    click.echo(f"\nStitching Results:")
+    click.echo(f"  Success: {success}")
+    click.echo(f"  Failed: {fail}")
+
+    # Show review folder
+    review_comps = pipeline.db.get_compilations_by_status(CompilationStatus.REVIEW)
+    if review_comps:
+        click.echo(f"\nReady for review in: {settings.REVIEW_DIR}")
+        for comp in review_comps:
+            click.echo(f"  {comp.id}: {comp.title}")
+
+
+@cli.command()
+def list_source_compilations():
+    """List all discovered source compilations."""
+    pipeline = get_pipeline()
+
+    compilations = pipeline.db.get_source_compilations()
+
+    if not compilations:
+        click.echo("No source compilations found.")
+        click.echo("Use 'discover-compilations' to find existing TikTok compilations.")
+        return
+
+    click.echo(f"Source Compilations ({len(compilations)}):\n")
+
+    # Group by type
+    by_type = {}
+    for comp in compilations:
+        comp_type = comp.compilation_type or "mixed"
+        if comp_type not in by_type:
+            by_type[comp_type] = []
+        by_type[comp_type].append(comp)
+
+    for comp_type, type_comps in sorted(by_type.items()):
+        click.echo(f"{comp_type.upper()} ({len(type_comps)}):")
+        for comp in type_comps:
+            status_icon = {
+                "discovered": "🔍",
+                "downloaded": "⬇️",
+                "classified": "✅",
+                "rejected": "❌",
+            }.get(comp.status.value, "❓")
+
+            click.echo(f"  {status_icon} {comp.id[:8]}: ~{comp.source_clip_count} clips, {comp.duration:.0f}s")
+            if comp.description:
+                desc_preview = comp.description[:50] + "..." if len(comp.description) > 50 else comp.description
+                click.echo(f"      {desc_preview}")
+        click.echo()
+
+
 # =============================================================================
 # Classification Commands
 # =============================================================================

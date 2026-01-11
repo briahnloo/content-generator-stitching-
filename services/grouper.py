@@ -533,6 +533,173 @@ class GrouperService:
         logger.info(f"Ungrouped compilation {compilation_id}")
         return True
 
+    # =========================================================================
+    # Source Compilation Grouping (for stitching existing compilations)
+    # =========================================================================
+
+    def get_groupable_source_compilations(self) -> Dict[str, int]:
+        """
+        Get source compilations available for mega-compilation grouping.
+        Returns dict of compilation_type -> count.
+        """
+        from core.models import VideoStatus
+
+        source_comps = self.db.get_source_compilations(status=VideoStatus.DOWNLOADED)
+        by_type = {}
+
+        for video in source_comps:
+            comp_type = video.compilation_type or "mixed"
+            by_type[comp_type] = by_type.get(comp_type, 0) + 1
+
+        return by_type
+
+    def create_mega_compilation(
+        self,
+        compilation_type: str = None,
+        num_sources: Optional[int] = None,
+    ) -> Optional[Compilation]:
+        """
+        Create a mega-compilation by grouping multiple source compilations.
+
+        Args:
+            compilation_type: Type of compilations to group (fails, comedy, etc.)
+                            If None, mixes all types.
+            num_sources: Number of source compilations to include.
+                        Defaults to 3-5.
+
+        Returns:
+            Created Compilation or None if not enough sources.
+        """
+        from core.models import VideoStatus
+
+        # Get available source compilations
+        source_comps = self.db.get_source_compilations(status=VideoStatus.DOWNLOADED)
+
+        if compilation_type:
+            source_comps = [
+                v for v in source_comps
+                if (v.compilation_type or "mixed") == compilation_type
+            ]
+
+        if len(source_comps) < 2:
+            logger.warning(
+                f"Not enough source compilations for mega-compilation "
+                f"({len(source_comps)} < 2)"
+            )
+            return None
+
+        # Determine how many to use
+        if num_sources is None:
+            num_sources = min(len(source_comps), 5)
+        else:
+            num_sources = min(num_sources, len(source_comps))
+
+        # Sort by duration (prefer medium-length compilations) and engagement
+        sorted_sources = sorted(
+            source_comps,
+            key=lambda v: (
+                # Prefer 60-120s compilations
+                -abs(v.duration - 90) if v.duration else 0,
+                v.engagement_score,
+            ),
+            reverse=True
+        )
+
+        selected = sorted_sources[:num_sources]
+
+        # Calculate total duration
+        total_duration = sum(v.duration or 0 for v in selected)
+
+        # Generate compilation ID and title
+        compilation_id = str(uuid.uuid4())[:12]
+        type_name = (compilation_type or "mixed").title()
+        part_number = self._get_next_part_number(compilation_type or "mega")
+
+        title = f"Ultimate {type_name} Compilation #{part_number}"
+
+        # Build credits text
+        authors = list(set(v.author for v in selected if v.author))
+        credits_text = ", ".join(f"@{a}" for a in authors[:10])  # Limit to 10 authors
+
+        # Create compilation
+        compilation = Compilation(
+            id=compilation_id,
+            category=compilation_type or "mega",
+            title=title,
+            video_ids=[v.id for v in selected],
+            credits_text=credits_text,
+            status=CompilationStatus.PENDING,
+            confidence_score=0.9,  # Source compilations are pre-vetted
+            auto_approved=False,
+        )
+
+        compilation.description = (
+            f"Mega-compilation from {len(selected)} sources | "
+            f"Total duration: {total_duration:.0f}s | "
+            f"Types: {', '.join(set(v.compilation_type or 'mixed' for v in selected))}"
+        )
+
+        # Insert compilation
+        if not self.db.insert_compilation(compilation):
+            logger.error(f"Failed to insert mega-compilation {compilation_id}")
+            return None
+
+        # Update source videos with compilation assignment
+        for order, video in enumerate(selected):
+            video.compilation_id = compilation_id
+            video.clip_order = order
+            video.status = VideoStatus.GROUPED
+            self.db.update_video(video)
+
+        logger.info(
+            f"Created mega-compilation {compilation_id}: '{title}' "
+            f"with {len(selected)} sources ({total_duration:.0f}s total)"
+        )
+        return compilation
+
+    def create_mega_compilations(
+        self,
+        max_compilations: int = 2,
+        num_sources_per: Optional[int] = None,
+    ) -> List[Compilation]:
+        """
+        Create multiple mega-compilations from source compilations.
+        Groups by type when possible.
+        """
+        created = []
+        available = self.get_groupable_source_compilations()
+
+        if not available:
+            logger.warning("No downloaded source compilations available")
+            return []
+
+        # Sort types by availability
+        sorted_types = sorted(available.items(), key=lambda x: x[1], reverse=True)
+
+        for comp_type, count in sorted_types:
+            if len(created) >= max_compilations:
+                break
+
+            if count >= 2:  # Need at least 2 to make a mega-compilation
+                logger.info(f"Creating {comp_type} mega-compilation ({count} sources available)")
+                compilation = self.create_mega_compilation(comp_type, num_sources_per)
+                if compilation:
+                    created.append(compilation)
+
+        # If we still need more and have mixed sources available
+        if len(created) < max_compilations:
+            remaining = self.db.get_source_compilations(status=VideoStatus.DOWNLOADED)
+            remaining = [v for v in remaining if v.compilation_id is None]
+
+            if len(remaining) >= 2:
+                logger.info(f"Creating mixed mega-compilation ({len(remaining)} sources available)")
+                compilation = self.create_mega_compilation(None, num_sources_per)
+                if compilation:
+                    created.append(compilation)
+
+        logger.info(f"Created {len(created)} mega-compilations")
+        return created
+
     def get_compilation_stats(self) -> Dict:
         """Get statistics about available videos for compilation."""
         stats = {

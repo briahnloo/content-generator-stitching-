@@ -325,3 +325,57 @@ music_moods:
     - fun.mp3
     - happy.mp3
     - comedic.mp3
+
+# ============================================================================
+# COMPILATION DISCOVERY - Finding existing compilation videos to stitch
+# ============================================================================
+
+compilation_discovery:
+  # Hashtags that indicate existing compilation content
+  hashtags:
+    - compilation
+    - failscompilation
+    - funnycompilation
+    - comedycompilation
+    - trynottolaugh
+    - top10
+    - top5
+    - bestof
+    - bestmoments
+    - dailydose
+    - dailyfails
+    - viralcompilation
+    - epicfails
+    - funniestmoments
+
+  # Regex patterns in descriptions that indicate compilation videos
+  description_patterns:
+    - 'top\s*\d+'                    # "top 10", "top5"
+    - 'best\s+(of|moments)'          # "best of 2024", "best moments"
+    - 'compilation'                  # "fails compilation"
+    - 'try\s*not\s*to\s*laugh'       # "try not to laugh"
+    - 'daily\s*(dose|fails)'         # "daily dose", "daily fails"
+    - '\d+\s*[.\-)\]]\s*\d+'         # "5. 4." or "5 - 4" countdown
+    - 'part\s*\d+\s*of\s*\d+'        # "part 1 of 3" (multi-part compilations OK)
+    - 'funniest\s+(moments|videos)'  # "funniest moments"
+    - 'viral\s+(moments|clips)'      # "viral moments"
+
+  # Author name patterns (accounts dedicated to compilations)
+  author_patterns:
+    - compilation
+    - daily
+    - fails
+    - funny
+    - viral
+    - moments
+    - clips
+
+  # Duration filters
+  min_duration_seconds: 45
+  max_duration_seconds: 300
+  preferred_min_duration: 60
+  preferred_max_duration: 180
+
+  # Quality thresholds for source compilations
+  min_quality_score: 0.6
+  min_estimated_clips: 3

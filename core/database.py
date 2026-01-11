@@ -182,11 +182,27 @@ class Database:
         if "visual_independence" not in video_columns:
             conn.execute("ALTER TABLE videos ADD COLUMN visual_independence REAL DEFAULT 0")
 
+        # Add source compilation tracking fields
+        if "is_source_compilation" not in video_columns:
+            conn.execute("ALTER TABLE videos ADD COLUMN is_source_compilation INTEGER DEFAULT 0")
+
+        if "source_clip_count" not in video_columns:
+            conn.execute("ALTER TABLE videos ADD COLUMN source_clip_count INTEGER DEFAULT 0")
+
+        if "compilation_type" not in video_columns:
+            conn.execute("ALTER TABLE videos ADD COLUMN compilation_type TEXT DEFAULT ''")
+
         # Create index on subcategory (after column exists)
         try:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_videos_subcategory ON videos(subcategory)")
         except sqlite3.OperationalError:
             pass  # Index already exists or column missing
+
+        # Create index on is_source_compilation for efficient querying
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_videos_source_compilation ON videos(is_source_compilation)")
+        except sqlite3.OperationalError:
+            pass
 
     # =========================================================================
     # Video CRUD Operations
@@ -317,6 +333,38 @@ class Database:
                 "SELECT * FROM videos WHERE compilation_id = ? ORDER BY clip_order",
                 (compilation_id,)
             ).fetchall()
+            return [Video.from_db_row(dict(row)) for row in rows]
+
+    def get_source_compilations(
+        self,
+        status: Optional[VideoStatus] = None,
+        compilation_type: Optional[str] = None,
+        unassigned_only: bool = False,
+        limit: Optional[int] = None,
+    ) -> List[Video]:
+        """Get videos that are source compilations (existing compilations from TikTok)."""
+        with self._get_connection() as conn:
+            query = "SELECT * FROM videos WHERE is_source_compilation = 1"
+            params = []
+
+            if status:
+                query += " AND status = ?"
+                params.append(status.value)
+
+            if compilation_type:
+                query += " AND compilation_type = ?"
+                params.append(compilation_type)
+
+            if unassigned_only:
+                query += " AND (compilation_id IS NULL OR compilation_id = '')"
+
+            # Sort by quality and duration (longer = more content)
+            query += " ORDER BY compilation_score DESC, duration DESC"
+
+            if limit:
+                query += f" LIMIT {limit}"
+
+            rows = conn.execute(query, params).fetchall()
             return [Video.from_db_row(dict(row)) for row in rows]
 
     def count_videos_by_status(self) -> dict:
