@@ -6,6 +6,7 @@ Prioritizes videos with high visual_independence scores.
 
 import logging
 import uuid
+from datetime import datetime
 from typing import List, Optional, Dict, Tuple
 
 from core.models import Video, Compilation, VideoStatus, CompilationStatus
@@ -545,6 +546,36 @@ class GrouperService:
 
         return by_type
 
+    def _calculate_source_score(self, v: Video) -> float:
+        """Calculate ranking score for source compilation selection.
+
+        Weights engagement, quality ratio, duration, and recency.
+        """
+        # Engagement (normalized to 0-1 based on typical viral ranges)
+        engagement_norm = min(v.engagement_score / 50000, 1.0)
+
+        # Quality ratio: likes/plays indicates content quality
+        quality_ratio = (v.likes / v.plays) if v.plays > 0 else 0
+
+        # Duration penalty: soft preference for target duration
+        target = settings.MEGA_RANK_TARGET_DURATION
+        duration_penalty = abs(v.duration - target) / target if v.duration else 0.5
+
+        # Recency bonus: prefer fresher content
+        days_old = (datetime.now() - v.created_at).days
+        recency_window = settings.MEGA_RANK_RECENCY_DAYS
+        recency_bonus = max(0, 1 - (days_old / recency_window))
+
+        # Weighted combination
+        score = (
+            engagement_norm * settings.MEGA_RANK_ENGAGEMENT_WEIGHT
+            + quality_ratio * settings.MEGA_RANK_QUALITY_WEIGHT
+            - duration_penalty * settings.MEGA_RANK_DURATION_PENALTY
+            + recency_bonus * settings.MEGA_RANK_RECENCY_BONUS
+        )
+
+        return score
+
     def create_mega_compilation(
         self,
         compilation_type: str = None,
@@ -586,14 +617,10 @@ class GrouperService:
         else:
             num_sources = min(num_sources, len(source_comps))
 
-        # Sort by duration (prefer medium-length compilations) and engagement
+        # Sort by weighted score (engagement, quality, duration, recency)
         sorted_sources = sorted(
             source_comps,
-            key=lambda v: (
-                # Prefer 60-120s compilations
-                -abs(v.duration - 90) if v.duration else 0,
-                v.engagement_score,
-            ),
+            key=self._calculate_source_score,
             reverse=True
         )
 

@@ -120,6 +120,14 @@ class Settings:
     REDDIT_FONT_SIZE: int = _get_env_int("REDDIT_FONT_SIZE", 48)
     REDDIT_WORDS_PER_CAPTION: int = _get_env_int("REDDIT_WORDS_PER_CAPTION", 4)
 
+    # Mega-compilation ranking weights (should sum to ~1.0)
+    MEGA_RANK_ENGAGEMENT_WEIGHT: float = _get_env_float("MEGA_RANK_ENGAGEMENT_WEIGHT", 0.5)
+    MEGA_RANK_QUALITY_WEIGHT: float = _get_env_float("MEGA_RANK_QUALITY_WEIGHT", 0.3)
+    MEGA_RANK_DURATION_PENALTY: float = _get_env_float("MEGA_RANK_DURATION_PENALTY", 0.15)
+    MEGA_RANK_RECENCY_BONUS: float = _get_env_float("MEGA_RANK_RECENCY_BONUS", 0.1)
+    MEGA_RANK_TARGET_DURATION: int = _get_env_int("MEGA_RANK_TARGET_DURATION", 90)
+    MEGA_RANK_RECENCY_DAYS: int = _get_env_int("MEGA_RANK_RECENCY_DAYS", 14)
+
     @classmethod
     def ensure_directories(cls) -> None:
         """Create all required directories if they don't exist."""
