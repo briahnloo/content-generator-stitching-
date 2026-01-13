@@ -31,7 +31,7 @@ class AccountManager:
         name: str,
         strategy: ContentStrategy = ContentStrategy.MIXED,
         handle: str = "",
-        daily_limit: int = 3,
+        daily_limit: int = 6,
     ) -> Account:
         """
         Create a new platform account.

@@ -318,7 +318,7 @@ class Account:
     credentials_encrypted: str = ""
 
     # Rate limiting
-    daily_upload_limit: int = 3
+    daily_upload_limit: int = 6
     uploads_today: int = 0
     last_upload_at: Optional[datetime] = None
 
@@ -354,7 +354,7 @@ class Account:
             handle=row.get("handle", ""),
             content_strategy=content_strategy,
             credentials_encrypted=row.get("credentials_encrypted", ""),
-            daily_upload_limit=row.get("daily_upload_limit", 3),
+            daily_upload_limit=row.get("daily_upload_limit", 6),
             uploads_today=row.get("uploads_today", 0),
             last_upload_at=last_upload_at,
             is_active=bool(row.get("is_active", True)),
@@ -501,5 +501,211 @@ class RoutingRule:
             "category": self.category,
             "min_confidence": self.min_confidence,
             "priority": self.priority,
+            "created_at": self.created_at.isoformat(),
+        }
+
+
+# =============================================================================
+# Reddit Story Narration Models
+# =============================================================================
+
+class RedditPostStatus(Enum):
+    """Reddit post processing status."""
+    DISCOVERED = "discovered"      # Post scraped from Reddit
+    AUDIO_READY = "audio_ready"    # TTS audio generated
+    COMPOSED = "composed"          # Video composed
+    UPLOADED = "uploaded"          # Uploaded to platform
+    FAILED = "failed"              # Processing failed
+
+
+class RedditVideoStatus(Enum):
+    """Reddit video processing status."""
+    PENDING = "pending"            # Not yet rendered
+    REVIEW = "review"              # Ready for manual review
+    APPROVED = "approved"          # Approved for upload
+    UPLOADED = "uploaded"          # Uploaded to platform
+    REJECTED = "rejected"          # Manually rejected
+
+
+@dataclass
+class RedditPost:
+    """Represents a Reddit story post for narration."""
+
+    # Identifiers
+    id: str                              # Internal UUID
+    reddit_id: str                       # Reddit post ID
+
+    # Content
+    subreddit: str = ""                  # Subreddit name
+    title: str = ""                      # Post title
+    body: str = ""                       # Post body text
+    author: str = ""                     # Reddit username
+
+    # Engagement metrics
+    upvotes: int = 0
+    upvote_ratio: float = 0.0
+    num_comments: int = 0
+
+    # Content analysis
+    word_count: int = 0
+    estimated_duration: float = 0.0      # Estimated narration duration in seconds
+
+    # Processing state
+    status: RedditPostStatus = RedditPostStatus.DISCOVERED
+    audio_path: str = ""                 # Path to generated TTS audio
+    word_timings: List[dict] = field(default_factory=list)  # [{word, start, end}, ...]
+
+    # Link to generated video
+    video_id: str = ""                   # Foreign key to reddit_videos
+
+    # Error tracking
+    error: str = ""
+
+    # Timestamps
+    reddit_created_at: Optional[datetime] = None
+    created_at: datetime = field(default_factory=datetime.now)
+
+    @property
+    def word_timings_json(self) -> str:
+        """Serialize word_timings to JSON string."""
+        return json.dumps(self.word_timings)
+
+    @property
+    def full_text(self) -> str:
+        """Get full text for TTS (title + body)."""
+        return f"{self.title}\n\n{self.body}"
+
+    @classmethod
+    def from_db_row(cls, row: dict) -> "RedditPost":
+        """Create RedditPost from database row."""
+        word_timings = json.loads(row.get("word_timings", "[]"))
+        status = RedditPostStatus(row.get("status", "discovered"))
+
+        created_at = row.get("created_at")
+        if isinstance(created_at, str):
+            created_at = datetime.fromisoformat(created_at)
+        elif created_at is None:
+            created_at = datetime.now()
+
+        reddit_created_at = row.get("reddit_created_at")
+        if isinstance(reddit_created_at, str) and reddit_created_at:
+            reddit_created_at = datetime.fromisoformat(reddit_created_at)
+        else:
+            reddit_created_at = None
+
+        return cls(
+            id=row["id"],
+            reddit_id=row.get("reddit_id", ""),
+            subreddit=row.get("subreddit", ""),
+            title=row.get("title", ""),
+            body=row.get("body", ""),
+            author=row.get("author", ""),
+            upvotes=row.get("upvotes", 0),
+            upvote_ratio=row.get("upvote_ratio", 0.0),
+            num_comments=row.get("num_comments", 0),
+            word_count=row.get("word_count", 0),
+            estimated_duration=row.get("estimated_duration", 0.0),
+            status=status,
+            audio_path=row.get("audio_path", ""),
+            word_timings=word_timings,
+            video_id=row.get("video_id", ""),
+            error=row.get("error", ""),
+            reddit_created_at=reddit_created_at,
+            created_at=created_at,
+        )
+
+    def to_db_dict(self) -> dict:
+        """Convert to dictionary for database storage."""
+        return {
+            "id": self.id,
+            "reddit_id": self.reddit_id,
+            "subreddit": self.subreddit,
+            "title": self.title,
+            "body": self.body,
+            "author": self.author,
+            "upvotes": self.upvotes,
+            "upvote_ratio": self.upvote_ratio,
+            "num_comments": self.num_comments,
+            "word_count": self.word_count,
+            "estimated_duration": self.estimated_duration,
+            "status": self.status.value,
+            "audio_path": self.audio_path,
+            "word_timings": self.word_timings_json,
+            "video_id": self.video_id,
+            "error": self.error,
+            "reddit_created_at": self.reddit_created_at.isoformat() if self.reddit_created_at else None,
+            "created_at": self.created_at.isoformat(),
+        }
+
+
+@dataclass
+class RedditVideo:
+    """Represents a composed Reddit narration video."""
+
+    id: str                              # UUID
+    post_id: str                         # Foreign key to reddit_posts
+
+    # Content
+    title: str = ""                      # Video title
+    description: str = ""                # Video description
+
+    # Video properties
+    duration: float = 0.0                # Video duration in seconds
+    output_path: str = ""                # Path to rendered video
+    background_used: str = ""            # Background video file used
+
+    # Processing state
+    status: RedditVideoStatus = RedditVideoStatus.PENDING
+
+    # Upload info
+    youtube_id: str = ""                 # YouTube video ID after upload
+    tiktok_id: str = ""                  # TikTok video ID after upload
+
+    # Error tracking
+    error: str = ""
+
+    # Timestamps
+    created_at: datetime = field(default_factory=datetime.now)
+
+    @classmethod
+    def from_db_row(cls, row: dict) -> "RedditVideo":
+        """Create RedditVideo from database row."""
+        status = RedditVideoStatus(row.get("status", "pending"))
+
+        created_at = row.get("created_at")
+        if isinstance(created_at, str):
+            created_at = datetime.fromisoformat(created_at)
+        elif created_at is None:
+            created_at = datetime.now()
+
+        return cls(
+            id=row["id"],
+            post_id=row.get("post_id", ""),
+            title=row.get("title", ""),
+            description=row.get("description", ""),
+            duration=row.get("duration", 0.0),
+            output_path=row.get("output_path", ""),
+            background_used=row.get("background_used", ""),
+            status=status,
+            youtube_id=row.get("youtube_id", ""),
+            tiktok_id=row.get("tiktok_id", ""),
+            error=row.get("error", ""),
+            created_at=created_at,
+        )
+
+    def to_db_dict(self) -> dict:
+        """Convert to dictionary for database storage."""
+        return {
+            "id": self.id,
+            "post_id": self.post_id,
+            "title": self.title,
+            "description": self.description,
+            "duration": self.duration,
+            "output_path": self.output_path,
+            "background_used": self.background_used,
+            "status": self.status.value,
+            "youtube_id": self.youtube_id,
+            "tiktok_id": self.tiktok_id,
+            "error": self.error,
             "created_at": self.created_at.isoformat(),
         }

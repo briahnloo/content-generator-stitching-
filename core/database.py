@@ -10,7 +10,8 @@ from typing import List, Optional, Generator
 
 from .models import (
     Video, Compilation, VideoStatus, CompilationStatus,
-    Account, Upload, RoutingRule, Platform, ContentStrategy, UploadStatus
+    Account, Upload, RoutingRule, Platform, ContentStrategy, UploadStatus,
+    RedditPost, RedditVideo, RedditPostStatus, RedditVideoStatus
 )
 
 
@@ -99,7 +100,7 @@ class Database:
                     handle TEXT,
                     content_strategy TEXT DEFAULT 'mixed',
                     credentials_encrypted TEXT,
-                    daily_upload_limit INTEGER DEFAULT 3,
+                    daily_upload_limit INTEGER DEFAULT 6,
                     uploads_today INTEGER DEFAULT 0,
                     last_upload_at TIMESTAMP,
                     is_active INTEGER DEFAULT 1,
@@ -134,6 +135,44 @@ class Database:
                     FOREIGN KEY (account_id) REFERENCES accounts(id)
                 );
 
+                -- Reddit Story Narration tables
+                CREATE TABLE IF NOT EXISTS reddit_posts (
+                    id TEXT PRIMARY KEY,
+                    reddit_id TEXT UNIQUE,
+                    subreddit TEXT,
+                    title TEXT,
+                    body TEXT,
+                    author TEXT,
+                    upvotes INTEGER DEFAULT 0,
+                    upvote_ratio REAL DEFAULT 0,
+                    num_comments INTEGER DEFAULT 0,
+                    word_count INTEGER DEFAULT 0,
+                    estimated_duration REAL DEFAULT 0,
+                    status TEXT DEFAULT 'discovered',
+                    audio_path TEXT,
+                    word_timings TEXT,
+                    video_id TEXT,
+                    error TEXT,
+                    reddit_created_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS reddit_videos (
+                    id TEXT PRIMARY KEY,
+                    post_id TEXT NOT NULL,
+                    title TEXT,
+                    description TEXT,
+                    duration REAL DEFAULT 0,
+                    output_path TEXT,
+                    background_used TEXT,
+                    status TEXT DEFAULT 'pending',
+                    youtube_id TEXT,
+                    tiktok_id TEXT,
+                    error TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (post_id) REFERENCES reddit_posts(id)
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
                 CREATE INDEX IF NOT EXISTS idx_videos_category ON videos(category);
                 CREATE INDEX IF NOT EXISTS idx_videos_tiktok_id ON videos(tiktok_id);
@@ -147,6 +186,11 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_uploads_compilation ON uploads(compilation_id);
                 CREATE INDEX IF NOT EXISTS idx_routing_account ON routing_rules(account_id);
                 CREATE INDEX IF NOT EXISTS idx_routing_category ON routing_rules(category);
+                CREATE INDEX IF NOT EXISTS idx_reddit_posts_status ON reddit_posts(status);
+                CREATE INDEX IF NOT EXISTS idx_reddit_posts_subreddit ON reddit_posts(subreddit);
+                CREATE INDEX IF NOT EXISTS idx_reddit_posts_reddit_id ON reddit_posts(reddit_id);
+                CREATE INDEX IF NOT EXISTS idx_reddit_videos_status ON reddit_videos(status);
+                CREATE INDEX IF NOT EXISTS idx_reddit_videos_post_id ON reddit_videos(post_id);
             """)
 
             # Migration: Add new columns to existing tables if they don't exist
@@ -794,3 +838,198 @@ class Database:
         """Delete a routing rule."""
         with self._get_connection() as conn:
             conn.execute("DELETE FROM routing_rules WHERE id = ?", (rule_id,))
+
+    # =========================================================================
+    # Reddit Post CRUD Operations
+    # =========================================================================
+
+    def insert_reddit_post(self, post: RedditPost) -> bool:
+        """Insert a new Reddit post record. Returns False if duplicate."""
+        with self._get_connection() as conn:
+            try:
+                data = post.to_db_dict()
+                columns = ", ".join(data.keys())
+                placeholders = ", ".join(["?" for _ in data])
+                conn.execute(
+                    f"INSERT INTO reddit_posts ({columns}) VALUES ({placeholders})",
+                    list(data.values())
+                )
+                return True
+            except sqlite3.IntegrityError:
+                return False
+
+    def update_reddit_post(self, post: RedditPost) -> None:
+        """Update an existing Reddit post record."""
+        with self._get_connection() as conn:
+            data = post.to_db_dict()
+            post_id = data.pop("id")
+            set_clause = ", ".join([f"{k} = ?" for k in data.keys()])
+            conn.execute(
+                f"UPDATE reddit_posts SET {set_clause} WHERE id = ?",
+                list(data.values()) + [post_id]
+            )
+
+    def get_reddit_post(self, post_id: str) -> Optional[RedditPost]:
+        """Get a Reddit post by ID."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM reddit_posts WHERE id = ?", (post_id,)
+            ).fetchone()
+            return RedditPost.from_db_row(dict(row)) if row else None
+
+    def get_reddit_post_by_reddit_id(self, reddit_id: str) -> Optional[RedditPost]:
+        """Get a Reddit post by Reddit ID."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM reddit_posts WHERE reddit_id = ?", (reddit_id,)
+            ).fetchone()
+            return RedditPost.from_db_row(dict(row)) if row else None
+
+    def get_reddit_posts_by_status(
+        self, status: RedditPostStatus, limit: Optional[int] = None
+    ) -> List[RedditPost]:
+        """Get Reddit posts by status."""
+        with self._get_connection() as conn:
+            query = "SELECT * FROM reddit_posts WHERE status = ? ORDER BY upvotes DESC"
+            if limit:
+                query += f" LIMIT {limit}"
+            rows = conn.execute(query, (status.value,)).fetchall()
+            return [RedditPost.from_db_row(dict(row)) for row in rows]
+
+    def get_reddit_posts_by_subreddit(
+        self, subreddit: str, status: Optional[RedditPostStatus] = None
+    ) -> List[RedditPost]:
+        """Get Reddit posts by subreddit."""
+        with self._get_connection() as conn:
+            if status:
+                rows = conn.execute(
+                    "SELECT * FROM reddit_posts WHERE subreddit = ? AND status = ? ORDER BY upvotes DESC",
+                    (subreddit, status.value)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM reddit_posts WHERE subreddit = ? ORDER BY upvotes DESC",
+                    (subreddit,)
+                ).fetchall()
+            return [RedditPost.from_db_row(dict(row)) for row in rows]
+
+    def reddit_id_exists(self, reddit_id: str) -> bool:
+        """Check if a Reddit ID already exists in the database."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM reddit_posts WHERE reddit_id = ? LIMIT 1", (reddit_id,)
+            ).fetchone()
+            return row is not None
+
+    def count_reddit_posts_by_status(self) -> dict:
+        """Get count of Reddit posts for each status."""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) as count FROM reddit_posts GROUP BY status"
+            ).fetchall()
+            return {row["status"]: row["count"] for row in rows}
+
+    def delete_reddit_post(self, post_id: str) -> None:
+        """Delete a Reddit post and its associated video."""
+        with self._get_connection() as conn:
+            conn.execute("DELETE FROM reddit_videos WHERE post_id = ?", (post_id,))
+            conn.execute("DELETE FROM reddit_posts WHERE id = ?", (post_id,))
+
+    # =========================================================================
+    # Reddit Video CRUD Operations
+    # =========================================================================
+
+    def insert_reddit_video(self, video: RedditVideo) -> bool:
+        """Insert a new Reddit video record."""
+        with self._get_connection() as conn:
+            try:
+                data = video.to_db_dict()
+                columns = ", ".join(data.keys())
+                placeholders = ", ".join(["?" for _ in data])
+                conn.execute(
+                    f"INSERT INTO reddit_videos ({columns}) VALUES ({placeholders})",
+                    list(data.values())
+                )
+                return True
+            except sqlite3.IntegrityError:
+                return False
+
+    def update_reddit_video(self, video: RedditVideo) -> None:
+        """Update an existing Reddit video record."""
+        with self._get_connection() as conn:
+            data = video.to_db_dict()
+            video_id = data.pop("id")
+            set_clause = ", ".join([f"{k} = ?" for k in data.keys()])
+            conn.execute(
+                f"UPDATE reddit_videos SET {set_clause} WHERE id = ?",
+                list(data.values()) + [video_id]
+            )
+
+    def get_reddit_video(self, video_id: str) -> Optional[RedditVideo]:
+        """Get a Reddit video by ID."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM reddit_videos WHERE id = ?", (video_id,)
+            ).fetchone()
+            return RedditVideo.from_db_row(dict(row)) if row else None
+
+    def get_reddit_video_by_post_id(self, post_id: str) -> Optional[RedditVideo]:
+        """Get a Reddit video by post ID."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM reddit_videos WHERE post_id = ?", (post_id,)
+            ).fetchone()
+            return RedditVideo.from_db_row(dict(row)) if row else None
+
+    def get_reddit_videos_by_status(
+        self, status: RedditVideoStatus, limit: Optional[int] = None
+    ) -> List[RedditVideo]:
+        """Get Reddit videos by status."""
+        with self._get_connection() as conn:
+            query = "SELECT * FROM reddit_videos WHERE status = ? ORDER BY created_at DESC"
+            if limit:
+                query += f" LIMIT {limit}"
+            rows = conn.execute(query, (status.value,)).fetchall()
+            return [RedditVideo.from_db_row(dict(row)) for row in rows]
+
+    def get_all_reddit_videos(self) -> List[RedditVideo]:
+        """Get all Reddit videos."""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM reddit_videos ORDER BY created_at DESC"
+            ).fetchall()
+            return [RedditVideo.from_db_row(dict(row)) for row in rows]
+
+    def count_reddit_videos_by_status(self) -> dict:
+        """Get count of Reddit videos for each status."""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) as count FROM reddit_videos GROUP BY status"
+            ).fetchall()
+            return {row["status"]: row["count"] for row in rows}
+
+    def delete_reddit_video(self, video_id: str) -> None:
+        """Delete a Reddit video record."""
+        with self._get_connection() as conn:
+            # Clear video_id reference in post
+            conn.execute(
+                "UPDATE reddit_posts SET video_id = '' WHERE video_id = ?",
+                (video_id,)
+            )
+            conn.execute("DELETE FROM reddit_videos WHERE id = ?", (video_id,))
+
+    def get_reddit_stats(self) -> dict:
+        """Get Reddit pipeline statistics."""
+        post_status_counts = self.count_reddit_posts_by_status()
+        video_status_counts = self.count_reddit_videos_by_status()
+
+        with self._get_connection() as conn:
+            total_posts = conn.execute("SELECT COUNT(*) FROM reddit_posts").fetchone()[0]
+            total_videos = conn.execute("SELECT COUNT(*) FROM reddit_videos").fetchone()[0]
+
+        return {
+            "total_posts": total_posts,
+            "total_videos": total_videos,
+            "posts_by_status": post_status_counts,
+            "videos_by_status": video_status_counts,
+        }

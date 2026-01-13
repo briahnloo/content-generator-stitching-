@@ -1,10 +1,10 @@
 # Viral Clips Pipeline
 
-Fully automated pipeline that discovers trending TikTok videos, categorizes them using AI, and stitches similar clips into compilation videos for publishing to YouTube and TikTok. Supports multiple accounts per platform with intelligent content routing.
+Fully automated pipeline for creating viral short-form video content. Supports TikTok compilation videos and Reddit story narration videos for publishing to YouTube and TikTok. Features multi-account support with intelligent content routing.
 
 ## What It Does
 
-The pipeline supports **two modes** for creating viral compilations:
+The pipeline supports **three modes** for creating viral content:
 
 ### Mode 1: Individual Clips Pipeline
 Discovers individual viral clips and combines them into compilations.
@@ -50,6 +50,23 @@ Finds existing TikTok compilations and stitches them into longer mega-compilatio
 3. **Group** - Combines multiple source compilations into mega-compilations
 4. **Render** - Stitches source compilations together with transitions
 
+### Mode 3: Reddit Story Narration Pipeline
+Scrapes text stories from Reddit, generates TTS narration, and creates videos with synchronized captions over gameplay footage.
+
+```
+┌─────────────────┐    ┌──────────────┐    ┌─────────────┐    ┌─────────────┐
+│  Discover       │───▶│  Generate    │───▶│   Compose   │───▶│   Review    │
+│  (PRAW/Reddit)  │    │  (Edge TTS)  │    │  (FFmpeg)   │    │  & Upload   │
+└─────────────────┘    └──────────────┘    └─────────────┘    └─────────────┘
+```
+
+**Reddit Story Flow:**
+
+1. **Discover** - Scrapes top posts from r/AITA, r/tifu, r/pettyrevenge, etc. via PRAW
+2. **Generate** - Converts text to speech using Edge TTS with word-level timings
+3. **Compose** - Overlays audio + synced captions on background gameplay footage
+4. **Review** - Manual approval before upload to platforms
+
 ---
 
 ## Features
@@ -64,6 +81,9 @@ Finds existing TikTok compilations and stitches them into longer mega-compilatio
 - **Encrypted Credentials** - Secure storage with Fernet encryption
 - **Background Daemon** - Runs autonomously with configurable schedule
 - **Full CLI** - Complete command-line interface for all operations
+- **Reddit Stories** - Scrape and narrate Reddit posts with TTS
+- **Synced Captions** - Word-level caption synchronization for narration videos
+- **Free TTS** - High-quality Edge TTS (no API costs)
 
 ---
 
@@ -105,6 +125,8 @@ nano .env  # or use any text editor
 |-----|--------|---------|
 | `APIFY_API_TOKEN` | [Apify Console](https://console.apify.com/account/integrations) | TikTok scraping |
 | `OPENAI_API_KEY` | [OpenAI Platform](https://platform.openai.com/api-keys) | Video classification |
+| `REDDIT_CLIENT_ID` | [Reddit Apps](https://www.reddit.com/prefs/apps) | Reddit scraping (optional) |
+| `REDDIT_CLIENT_SECRET` | [Reddit Apps](https://www.reddit.com/prefs/apps) | Reddit scraping (optional) |
 
 ### 3. Add Background Music
 
@@ -265,29 +287,35 @@ python daemon.py
 |---------|-------------|
 | `run` | Full pipeline for individual clips (discover → classify → group → stitch) |
 | `run-compilations` | Full pipeline for source compilations (download → group → stitch) |
+| `reddit run` | Full Reddit pipeline (discover → TTS → compose) |
 | `discover` | Find individual viral TikTok clips |
 | `discover-compilations` | Find existing TikTok compilation videos |
+| `reddit discover` | Scrape Reddit stories |
 | `classify` | AI categorize downloaded clips |
 | `group` | Group clips into compilations |
 | `stitch` | Render compilations to video files |
+| `reddit generate` | Generate TTS audio for Reddit posts |
+| `reddit compose` | Compose Reddit narration videos |
 | `review` | List compilations ready for review |
 | `approve <id>` | Approve a compilation for upload |
 | `reject <id>` | Reject a compilation |
 | `upload <id>` | Upload compilation to YouTube |
 | `status` | Show pipeline statistics |
+| `reddit status` | Show Reddit pipeline statistics |
 | `list-compilations` | List all compilations |
 | `list-source-compilations` | List discovered source compilations |
 
 ---
 
-### Two Pipeline Modes
+### Three Pipeline Modes
 
-The pipeline supports two modes for creating compilations:
+The pipeline supports three modes for creating content:
 
 | Mode | Command | Description |
 |------|---------|-------------|
 | **Individual Clips** | `run` | Discovers individual viral clips, classifies them, groups similar clips together |
 | **Source Compilations** | `run-compilations` | Finds existing TikTok compilations and stitches them into mega-compilations |
+| **Reddit Stories** | `reddit run` | Scrapes Reddit stories, generates TTS narration, composes videos with synced captions |
 
 ---
 
@@ -344,6 +372,62 @@ python cli.py discover-compilations -l 20 --type fails
 # List all discovered source compilations
 python cli.py list-source-compilations
 ```
+
+---
+
+### Reddit Story Narration Pipeline
+
+Scrapes text stories from Reddit, converts to speech with Edge TTS, and composes videos with synchronized captions over background gameplay footage.
+
+**Prerequisites:**
+1. Create a Reddit app at https://www.reddit.com/prefs/apps (select "script" type)
+2. Set `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET` in `.env`
+3. Add background MP4 videos to `config/backgrounds/`
+
+```bash
+# Full pipeline: discover -> TTS -> compose
+python cli.py reddit run --videos 3
+
+# From specific subreddit
+python cli.py reddit run -s tifu --videos 2
+
+# With custom discovery limit
+python cli.py reddit run -d 20 -v 5
+```
+
+**Individual stages:**
+
+```bash
+# Discover stories from configured subreddits
+python cli.py reddit discover --limit 10
+
+# Discover from specific subreddit
+python cli.py reddit discover -s AmItheAsshole -l 5
+
+# Generate TTS audio
+python cli.py reddit generate --limit 5
+
+# Compose videos (requires backgrounds in config/backgrounds/)
+python cli.py reddit compose --limit 3
+
+# Check status
+python cli.py reddit status
+
+# List posts and videos
+python cli.py reddit list
+python cli.py reddit videos
+
+# Approve/reject videos
+python cli.py reddit approve <video_id>
+python cli.py reddit reject <video_id>
+```
+
+**Configured Subreddits (in `config/reddit.yaml`):**
+- r/AmItheAsshole - Moral judgment stories
+- r/tifu - "Today I F***ed Up" stories
+- r/relationship_advice - Relationship drama
+- r/pettyrevenge - Revenge stories
+- r/MaliciousCompliance - Workplace compliance stories
 
 ---
 
@@ -471,9 +555,11 @@ viral-clips-pipeline/
 ├── config/
 │   ├── settings.py           # Configuration management
 │   ├── categories.yaml       # Category definitions
-│   └── music/                # Background music (.mp3)
+│   ├── reddit.yaml           # Reddit subreddit configuration
+│   ├── music/                # Background music (.mp3)
+│   └── backgrounds/          # Background videos for Reddit narration (.mp4)
 ├── core/
-│   ├── models.py             # Data models (Video, Compilation, Account, etc.)
+│   ├── models.py             # Data models (Video, Compilation, RedditPost, etc.)
 │   ├── database.py           # SQLite CRUD operations
 │   └── encryption.py         # Fernet credential encryption
 ├── services/
@@ -486,16 +572,22 @@ viral-clips-pipeline/
 │   ├── account_manager.py    # Account CRUD + credentials
 │   ├── upload_router.py      # Content routing logic
 │   ├── youtube_uploader.py   # YouTube Data API v3
-│   └── tiktok_uploader.py    # TikTok upload via cookies
+│   ├── tiktok_uploader.py    # TikTok upload via cookies
+│   ├── reddit_scraper.py     # PRAW Reddit scraper
+│   ├── reddit_tts.py         # Edge TTS audio generation
+│   └── reddit_composer.py    # Reddit video composition
 ├── scheduler/
 │   └── jobs.py               # APScheduler job definitions
 ├── data/
 │   ├── downloads/            # Downloaded TikTok videos
+│   ├── reddit_audio/         # Generated TTS audio files
 │   └── pipeline.db           # SQLite database
 ├── output/
-│   └── review/               # Rendered compilations
+│   ├── review/               # Rendered TikTok compilations
+│   └── reddit/               # Rendered Reddit narration videos
 ├── daemon.py                 # Background scheduler runner
-├── pipeline.py               # Pipeline orchestrator
+├── pipeline.py               # TikTok pipeline orchestrator
+├── reddit_pipeline.py        # Reddit pipeline orchestrator
 ├── cli.py                    # CLI interface
 ├── requirements.txt          # Python dependencies
 ├── .env.example              # Environment template
@@ -546,11 +638,23 @@ TIKTOK_DAILY_LIMIT_PER_ACCOUNT=5
 # =============================================================================
 # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 CREDENTIALS_ENCRYPTION_KEY=your-key-here
+
+# =============================================================================
+# REDDIT STORY NARRATION
+# =============================================================================
+REDDIT_CLIENT_ID=your_client_id
+REDDIT_CLIENT_SECRET=your_client_secret
+REDDIT_TTS_VOICE=en-US-ChristopherNeural  # Edge TTS voice
+REDDIT_MIN_WORDS=150                       # Minimum story length
+REDDIT_MAX_WORDS=500                       # Maximum story length
+REDDIT_MIN_UPVOTES=1000                    # Minimum upvotes to consider
 ```
 
 ---
 
 ## Cost Estimates
+
+**TikTok Compilation Pipeline:**
 
 | Component | Cost per Run (50 videos, 2 compilations) |
 |-----------|------------------------------------------|
@@ -560,9 +664,18 @@ CREDENTIALS_ENCRYPTION_KEY=your-key-here
 | TikTok API | Free (uses cookies) |
 | **Total per run** | **~$0.55-1.05** |
 
+**Reddit Story Pipeline:**
+
+| Component | Cost |
+|-----------|------|
+| Reddit API (PRAW) | Free |
+| Edge TTS | Free |
+| FFmpeg | Free |
+| **Total** | **$0.00** |
+
 **Monthly estimates (4 runs/day):**
-- Conservative: ~$70/month
-- With high volume: ~$130/month
+- TikTok pipeline: ~$70-130/month
+- Reddit pipeline: $0/month
 
 ---
 
@@ -601,6 +714,28 @@ sudo apt install ffmpeg
 # Verify
 ffmpeg -version
 ```
+
+### "Reddit API credentials not configured"
+```bash
+# 1. Create app at https://www.reddit.com/prefs/apps
+# 2. Select "script" as app type
+# 3. Add to .env:
+REDDIT_CLIENT_ID=your_client_id
+REDDIT_CLIENT_SECRET=your_client_secret
+```
+
+### "No background videos found"
+```bash
+# Add MP4 files to config/backgrounds/
+# Good options: Minecraft parkour, Subway Surfers, GTA driving
+ls config/backgrounds/
+# Should show: gameplay1.mp4, gameplay2.mp4, etc.
+```
+
+### "TTS generation failed"
+- Check internet connection (Edge TTS requires online access)
+- Verify post text isn't empty
+- Check logs for specific error
 
 ---
 

@@ -91,13 +91,34 @@ class Settings:
     MIN_CONFIDENCE_FOR_UPLOAD: float = _get_env_float("MIN_CONFIDENCE_FOR_UPLOAD", 0.6)
 
     # Rate limits
-    YOUTUBE_DAILY_LIMIT_PER_ACCOUNT: int = _get_env_int("YOUTUBE_DAILY_LIMIT_PER_ACCOUNT", 3)
+    YOUTUBE_DAILY_LIMIT_PER_ACCOUNT: int = _get_env_int("YOUTUBE_DAILY_LIMIT_PER_ACCOUNT", 6)
     TIKTOK_DAILY_LIMIT_PER_ACCOUNT: int = _get_env_int("TIKTOK_DAILY_LIMIT_PER_ACCOUNT", 5)
 
     # Scheduler settings
     SCHEDULER_ENABLED: bool = _get_env("SCHEDULER_ENABLED", "true").lower() == "true"
     DISCOVERY_INTERVAL_HOURS: int = _get_env_int("DISCOVERY_INTERVAL_HOURS", 4)
     UPLOAD_INTERVAL_MINUTES: int = _get_env_int("UPLOAD_INTERVAL_MINUTES", 15)
+
+    # Reddit API settings
+    REDDIT_CLIENT_ID: str = _get_env("REDDIT_CLIENT_ID", "")
+    REDDIT_CLIENT_SECRET: str = _get_env("REDDIT_CLIENT_SECRET", "")
+    REDDIT_USER_AGENT: str = _get_env("REDDIT_USER_AGENT", "viral-clips-pipeline/1.0")
+
+    # Reddit Pipeline Paths
+    REDDIT_AUDIO_DIR: Path = Path(_get_env("REDDIT_AUDIO_DIR", str(BASE_DIR / "data" / "reddit_audio")))
+    REDDIT_OUTPUT_DIR: Path = Path(_get_env("REDDIT_OUTPUT_DIR", str(BASE_DIR / "output" / "reddit")))
+    BACKGROUNDS_DIR: Path = Path(_get_env("BACKGROUNDS_DIR", str(CONFIG_DIR / "backgrounds")))
+
+    # Reddit TTS settings
+    REDDIT_TTS_VOICE: str = _get_env("REDDIT_TTS_VOICE", "en-US-ChristopherNeural")
+    REDDIT_WORDS_PER_MINUTE: int = _get_env_int("REDDIT_WORDS_PER_MINUTE", 150)
+
+    # Reddit Video settings
+    REDDIT_MIN_WORDS: int = _get_env_int("REDDIT_MIN_WORDS", 150)
+    REDDIT_MAX_WORDS: int = _get_env_int("REDDIT_MAX_WORDS", 500)
+    REDDIT_MIN_UPVOTES: int = _get_env_int("REDDIT_MIN_UPVOTES", 1000)
+    REDDIT_FONT_SIZE: int = _get_env_int("REDDIT_FONT_SIZE", 48)
+    REDDIT_WORDS_PER_CAPTION: int = _get_env_int("REDDIT_WORDS_PER_CAPTION", 4)
 
     @classmethod
     def ensure_directories(cls) -> None:
@@ -107,6 +128,10 @@ class Settings:
         cls.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         cls.REVIEW_DIR.mkdir(parents=True, exist_ok=True)
         cls.MUSIC_DIR.mkdir(parents=True, exist_ok=True)
+        # Reddit directories
+        cls.REDDIT_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+        cls.REDDIT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        cls.BACKGROUNDS_DIR.mkdir(parents=True, exist_ok=True)
 
     @classmethod
     def validate_api_keys(cls, require_apify: bool = False, require_openai: bool = False) -> None:
@@ -397,6 +422,131 @@ class CategoriesConfig:
         }
 
 
+class RedditConfig:
+    """Reddit pipeline configuration loaded from YAML."""
+
+    _config: dict = None
+
+    @classmethod
+    def _load(cls) -> dict:
+        """Load Reddit configuration from YAML file."""
+        if cls._config is None:
+            config_path = CONFIG_DIR / "reddit.yaml"
+            if config_path.exists():
+                with open(config_path, "r") as f:
+                    cls._config = yaml.safe_load(f)
+            else:
+                cls._config = cls._default_config()
+        return cls._config
+
+    @classmethod
+    def _default_config(cls) -> dict:
+        """Return default configuration if YAML doesn't exist."""
+        return {
+            "subreddits": {
+                "aita": {
+                    "subreddit": "AmItheAsshole",
+                    "min_upvotes": 2000,
+                    "min_words": 150,
+                    "max_words": 400,
+                    "sort": "hot",
+                },
+                "tifu": {
+                    "subreddit": "tifu",
+                    "min_upvotes": 3000,
+                    "min_words": 200,
+                    "max_words": 500,
+                    "sort": "hot",
+                },
+                "relationship_advice": {
+                    "subreddit": "relationship_advice",
+                    "min_upvotes": 1500,
+                    "min_words": 150,
+                    "max_words": 450,
+                    "sort": "hot",
+                },
+                "pettyrevenge": {
+                    "subreddit": "pettyrevenge",
+                    "min_upvotes": 1000,
+                    "min_words": 150,
+                    "max_words": 400,
+                    "sort": "hot",
+                },
+                "maliciouscompliance": {
+                    "subreddit": "MaliciousCompliance",
+                    "min_upvotes": 1500,
+                    "min_words": 200,
+                    "max_words": 500,
+                    "sort": "hot",
+                },
+            },
+            "tts": {
+                "default_voice": "en-US-ChristopherNeural",
+                "voices": {
+                    "male": ["en-US-ChristopherNeural", "en-US-GuyNeural"],
+                    "female": ["en-US-JennyNeural", "en-US-AriaNeural"],
+                },
+                "rate": "+0%",
+                "pitch": "+0Hz",
+            },
+            "video": {
+                "font_size": 48,
+                "font_color": "white",
+                "stroke_color": "black",
+                "stroke_width": 2,
+                "words_per_caption": 4,
+                "caption_position": "center",
+                "background_blur": 0,
+            },
+            "filtering": {
+                "min_upvote_ratio": 0.7,
+                "blocked_words": ["nsfw", "nsfl", "gore", "death"],
+                "require_body": True,
+            },
+        }
+
+    @classmethod
+    def get_subreddits(cls) -> dict:
+        """Get all subreddit configurations."""
+        return cls._load().get("subreddits", {})
+
+    @classmethod
+    def get_subreddit(cls, name: str) -> dict:
+        """Get a specific subreddit configuration."""
+        return cls.get_subreddits().get(name, {})
+
+    @classmethod
+    def get_subreddit_names(cls) -> List[str]:
+        """Get list of all configured subreddit names."""
+        return list(cls.get_subreddits().keys())
+
+    @classmethod
+    def get_tts_config(cls) -> dict:
+        """Get TTS configuration."""
+        return cls._load().get("tts", {})
+
+    @classmethod
+    def get_default_voice(cls) -> str:
+        """Get default TTS voice."""
+        return cls.get_tts_config().get("default_voice", "en-US-ChristopherNeural")
+
+    @classmethod
+    def get_video_config(cls) -> dict:
+        """Get video composition configuration."""
+        return cls._load().get("video", {})
+
+    @classmethod
+    def get_filtering_config(cls) -> dict:
+        """Get content filtering configuration."""
+        return cls._load().get("filtering", {})
+
+    @classmethod
+    def get_blocked_words(cls) -> List[str]:
+        """Get list of blocked words for filtering."""
+        return cls.get_filtering_config().get("blocked_words", [])
+
+
 # Singleton instance
 settings = Settings()
 categories_config = CategoriesConfig()
+reddit_config = RedditConfig()

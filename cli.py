@@ -684,7 +684,7 @@ def account():
 @click.option("--name", "-n", required=True, help="Account name")
 @click.option("--strategy", "-s", default="mixed", type=click.Choice(["fails", "comedy", "mixed"]))
 @click.option("--handle", "-h", default="", help="@username handle")
-@click.option("--daily-limit", "-l", default=3, help="Daily upload limit")
+@click.option("--daily-limit", "-l", default=6, help="Daily upload limit")
 def account_add(platform: str, name: str, strategy: str, handle: str, daily_limit: int):
     """Add a new platform account."""
     db = Database(settings.DATABASE_PATH)
@@ -1056,6 +1056,284 @@ def daemon_status():
 
     script = Path(__file__).parent / "daemon.py"
     subprocess.run(["python", str(script), "--status"])
+
+
+# =============================================================================
+# Reddit Story Narration Commands
+# =============================================================================
+
+
+def get_reddit_pipeline():
+    """Get Reddit pipeline instance."""
+    from reddit_pipeline import RedditPipeline
+    settings.ensure_directories()
+    return RedditPipeline()
+
+
+@cli.group()
+def reddit():
+    """Reddit story narration pipeline commands."""
+    pass
+
+
+@reddit.command("discover")
+@click.option("--subreddit", "-s", default=None, help="Specific subreddit to scrape")
+@click.option("--limit", "-l", default=10, help="Max posts per subreddit")
+def reddit_discover(subreddit: str, limit: int):
+    """Discover Reddit stories for narration."""
+    pipeline = get_reddit_pipeline()
+
+    click.echo("Discovering Reddit stories...")
+    if subreddit:
+        click.echo(f"  Subreddit: r/{subreddit}")
+    else:
+        click.echo("  Using configured subreddits")
+    click.echo(f"  Limit: {limit}")
+
+    try:
+        posts, skipped = pipeline.discover(subreddit, limit)
+        click.echo(f"\nDiscovery Results:")
+        click.echo(f"  Discovered: {len(posts)}")
+        click.echo(f"  Skipped: {skipped}")
+
+        if posts:
+            click.echo(f"\nDiscovered Posts:")
+            for post in posts[:5]:
+                click.echo(f"  - r/{post.subreddit}: {post.title[:50]}...")
+                click.echo(f"    {post.word_count} words, ~{post.estimated_duration:.0f}s")
+            if len(posts) > 5:
+                click.echo(f"  ... and {len(posts) - 5} more")
+    except Exception as e:
+        click.echo(f"Error: {e}")
+        raise click.Abort()
+
+
+@reddit.command("generate")
+@click.option("--limit", "-l", default=None, type=int, help="Max posts to process")
+def reddit_generate(limit: int):
+    """Generate TTS audio for discovered posts."""
+    pipeline = get_reddit_pipeline()
+
+    pending = pipeline.get_pending_posts()
+    if limit:
+        pending = pending[:limit]
+
+    if not pending:
+        click.echo("No posts pending TTS generation.")
+        return
+
+    click.echo(f"Generating TTS audio for {len(pending)} posts...")
+
+    with tqdm(total=len(pending), desc="Generating", unit="post") as pbar:
+        success_count = 0
+        fail_count = 0
+
+        for post in pending:
+            if pipeline.tts.generate_and_update(post):
+                success_count += 1
+            else:
+                fail_count += 1
+            pbar.update(1)
+
+    click.echo(f"\nTTS Generation Results:")
+    click.echo(f"  Success: {success_count}")
+    click.echo(f"  Failed: {fail_count}")
+
+
+@reddit.command("compose")
+@click.option("--limit", "-l", default=None, type=int, help="Max videos to compose")
+def reddit_compose(limit: int):
+    """Compose videos from posts with audio."""
+    pipeline = get_reddit_pipeline()
+
+    # Check for backgrounds
+    from config.settings import settings
+    backgrounds = list(settings.BACKGROUNDS_DIR.glob("*.mp4"))
+    if not backgrounds:
+        click.echo(f"No background videos found in {settings.BACKGROUNDS_DIR}")
+        click.echo("Add MP4 files to use as backgrounds.")
+        return
+
+    click.echo(f"Found {len(backgrounds)} background videos.")
+
+    audio_ready = pipeline.get_audio_ready_posts()
+    if limit:
+        audio_ready = audio_ready[:limit]
+
+    if not audio_ready:
+        click.echo("No posts with audio ready for composition.")
+        return
+
+    click.echo(f"Composing {len(audio_ready)} videos...")
+
+    with tqdm(total=len(audio_ready), desc="Composing", unit="video") as pbar:
+        success_count = 0
+        fail_count = 0
+
+        for post in audio_ready:
+            video = pipeline.composer.compose_and_update(post)
+            if video:
+                success_count += 1
+            else:
+                fail_count += 1
+            pbar.update(1)
+
+    click.echo(f"\nComposition Results:")
+    click.echo(f"  Success: {success_count}")
+    click.echo(f"  Failed: {fail_count}")
+
+    if success_count > 0:
+        click.echo(f"\nVideos ready for review in: {settings.REDDIT_OUTPUT_DIR}")
+
+
+@reddit.command("run")
+@click.option("--subreddit", "-s", default=None, help="Specific subreddit to scrape")
+@click.option("--discover-limit", "-d", default=10, help="Max posts to discover per subreddit")
+@click.option("--videos", "-v", default=3, help="Max videos to create")
+def reddit_run(subreddit: str, discover_limit: int, videos: int):
+    """Run full Reddit pipeline: discover -> TTS -> compose."""
+    pipeline = get_reddit_pipeline()
+
+    # Check for backgrounds
+    from config.settings import settings
+    backgrounds = list(settings.BACKGROUNDS_DIR.glob("*.mp4"))
+    if not backgrounds:
+        click.echo(f"No background videos found in {settings.BACKGROUNDS_DIR}")
+        click.echo("Add MP4 files to use as backgrounds before running the pipeline.")
+        return
+
+    click.echo("Starting Reddit Story Narration Pipeline...")
+    click.echo(f"  Subreddit: {subreddit or 'all configured'}")
+    click.echo(f"  Discover limit: {discover_limit}")
+    click.echo(f"  Videos to create: {videos}")
+    click.echo(f"  Backgrounds available: {len(backgrounds)}")
+    click.echo()
+
+    results = pipeline.run_full_pipeline(
+        subreddit=subreddit,
+        discover_limit=discover_limit,
+        videos_to_create=videos,
+    )
+
+    click.echo("\n" + "=" * 50)
+    click.echo("Pipeline Complete")
+    click.echo("=" * 50)
+    click.echo(f"Posts discovered: {results['discovered']}")
+    click.echo(f"Posts skipped: {results['skipped']}")
+    click.echo(f"Audio generated: {results['audio_success']}")
+    click.echo(f"Videos created: {results['videos_success']}")
+
+    if results['videos_success'] > 0:
+        click.echo(f"\nVideos ready in: {settings.REDDIT_OUTPUT_DIR}")
+
+
+@reddit.command("status")
+def reddit_status():
+    """Show Reddit pipeline status and statistics."""
+    pipeline = get_reddit_pipeline()
+    stats = pipeline.get_status()
+
+    click.echo("Reddit Pipeline Status")
+    click.echo("=" * 50)
+
+    click.echo(f"\nTotal posts: {stats['total_posts']}")
+    click.echo(f"Total videos: {stats['total_videos']}")
+
+    if stats['posts_by_status']:
+        click.echo("\nPosts by Status:")
+        for status, count in sorted(stats['posts_by_status'].items()):
+            click.echo(f"  {status}: {count}")
+
+    if stats['videos_by_status']:
+        click.echo("\nVideos by Status:")
+        for status, count in sorted(stats['videos_by_status'].items()):
+            click.echo(f"  {status}: {count}")
+
+
+@reddit.command("list")
+@click.option("--status", "-s", default=None,
+              type=click.Choice(["discovered", "audio_ready", "composed", "uploaded", "failed"]),
+              help="Filter by status")
+@click.option("--limit", "-l", default=20, help="Max posts to show")
+def reddit_list(status: str, limit: int):
+    """List Reddit posts."""
+    pipeline = get_reddit_pipeline()
+    posts = pipeline.list_posts(status, limit)
+
+    if not posts:
+        click.echo("No Reddit posts found.")
+        return
+
+    click.echo(f"Reddit Posts ({len(posts)}):\n")
+
+    for post in posts:
+        status_icon = {
+            "discovered": "🔍",
+            "audio_ready": "🔊",
+            "composed": "🎬",
+            "uploaded": "📤",
+            "failed": "❌",
+        }.get(post.status.value, "❓")
+
+        click.echo(f"{status_icon} {post.id}: r/{post.subreddit}")
+        click.echo(f"   {post.title[:60]}...")
+        click.echo(f"   {post.word_count} words, ~{post.estimated_duration:.0f}s, {post.upvotes} upvotes")
+        click.echo()
+
+
+@reddit.command("videos")
+@click.option("--status", "-s", default=None,
+              type=click.Choice(["pending", "review", "approved", "uploaded", "rejected"]),
+              help="Filter by status")
+@click.option("--limit", "-l", default=20, help="Max videos to show")
+def reddit_videos(status: str, limit: int):
+    """List Reddit videos."""
+    pipeline = get_reddit_pipeline()
+    videos = pipeline.list_videos(status, limit)
+
+    if not videos:
+        click.echo("No Reddit videos found.")
+        return
+
+    click.echo(f"Reddit Videos ({len(videos)}):\n")
+
+    for video in videos:
+        status_icon = {
+            "pending": "⏳",
+            "review": "👀",
+            "approved": "✅",
+            "uploaded": "📤",
+            "rejected": "❌",
+        }.get(video.status.value, "❓")
+
+        click.echo(f"{status_icon} {video.id}: {video.title[:50]}...")
+        click.echo(f"   Duration: {video.duration:.0f}s")
+        click.echo(f"   Output: {video.output_path}")
+        click.echo()
+
+
+@reddit.command("approve")
+@click.argument("video_id")
+def reddit_approve(video_id: str):
+    """Approve a Reddit video for upload."""
+    pipeline = get_reddit_pipeline()
+
+    if pipeline.approve_video(video_id):
+        click.echo(f"Video {video_id} approved for upload.")
+    else:
+        click.echo(f"Failed to approve video {video_id}.")
+
+
+@reddit.command("reject")
+@click.argument("video_id")
+def reddit_reject(video_id: str):
+    """Reject a Reddit video."""
+    pipeline = get_reddit_pipeline()
+
+    if pipeline.reject_video(video_id):
+        click.echo(f"Video {video_id} rejected.")
+    else:
+        click.echo(f"Failed to reject video {video_id}.")
 
 
 if __name__ == "__main__":

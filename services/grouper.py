@@ -190,23 +190,15 @@ class GrouperService:
     ) -> List[Video]:
         """
         Select the best videos for a compilation.
-        Prioritizes by visual_independence first, then compilation_score, then engagement.
+        Prioritizes by likes (most to least).
         """
         # Filter by quality thresholds
         quality_videos = self._filter_quality_videos(videos)
 
-        # Sort by:
-        # 1. visual_independence (most important for compilations)
-        # 2. compilation_score
-        # 3. engagement_score
-        # Legacy videos (score=0) are treated as 0.5 tier
+        # Sort by likes descending
         sorted_videos = sorted(
             quality_videos,
-            key=lambda v: (
-                v.visual_independence if v.visual_independence > 0 else 0.5,
-                v.compilation_score if v.compilation_score > 0 else 0.5,
-                v.engagement_score
-            ),
+            key=lambda v: v.likes,
             reverse=True
         )
 
@@ -630,7 +622,7 @@ class GrouperService:
             credits_text=credits_text,
             status=CompilationStatus.PENDING,
             confidence_score=0.9,  # Source compilations are pre-vetted
-            auto_approved=False,
+            auto_approved=True,  # Auto-approve mega-compilations (from pre-vetted sources)
         )
 
         compilation.description = (

@@ -140,7 +140,7 @@ class PipelineScheduler:
                 platform=Platform.YOUTUBE,
                 name="Default YouTube Account",
                 strategy=ContentStrategy.MIXED,
-                daily_limit=3,
+                daily_limit=6,
             )
 
             # Store credentials from .env
@@ -420,57 +420,57 @@ class PipelineScheduler:
     # =========================================================================
 
     def configure_default_schedule(self) -> None:
-        """Configure the default job schedule."""
+        """Configure the default job schedule (optimized for 6-hour upload cycles)."""
 
-        # Discovery: Every 4 hours
+        # Discovery: Every 6 hours (aligned with upload cycle, saves API costs)
         self.scheduler.add_job(
             self.job_discover_content,
-            IntervalTrigger(hours=4),
+            IntervalTrigger(hours=6),
             id="discover_content",
             name="Discover new content",
             replace_existing=True,
         )
 
-        # Download: Every 30 minutes
+        # Download: Every 2 hours (processes discovered content efficiently)
         self.scheduler.add_job(
             self.job_download_videos,
-            IntervalTrigger(minutes=30),
+            IntervalTrigger(hours=2),
             id="download_videos",
             name="Download videos",
             replace_existing=True,
         )
 
-        # Classify: Every 30 minutes (offset by 10 min from download)
+        # Classify: Every 2 hours (processes downloaded content)
         self.scheduler.add_job(
             self.job_classify_videos,
-            IntervalTrigger(minutes=30),
+            IntervalTrigger(hours=2),
             id="classify_videos",
             name="Classify videos",
             replace_existing=True,
         )
 
-        # Create compilations: Every hour
+        # Create compilations: Every 2 hours (creates compilations from classified videos)
         self.scheduler.add_job(
             self.job_create_compilations,
-            IntervalTrigger(hours=1),
+            IntervalTrigger(hours=2),
             id="create_compilations",
             name="Create compilations",
             replace_existing=True,
         )
 
-        # Render: Every hour (offset by 30 min from grouping)
+        # Render: Every 2 hours (renders pending compilations)
         self.scheduler.add_job(
             self.job_render_compilations,
-            IntervalTrigger(hours=1),
+            IntervalTrigger(hours=2),
             id="render_compilations",
             name="Render compilations",
             replace_existing=True,
         )
 
-        # Route uploads: Every 30 minutes
+        # Route uploads: Every 1 hour (routes approved compilations to accounts)
         self.scheduler.add_job(
             self.job_route_uploads,
-            IntervalTrigger(minutes=30),
+            IntervalTrigger(hours=1),
             id="route_uploads",
             name="Route uploads to accounts",
             replace_existing=True,
@@ -616,10 +616,10 @@ class PipelineScheduler:
             replace_existing=True,
         )
 
-        # Create mega-compilations: Every 4 hours
+        # Create mega-compilations: Every 2 hours (more efficient processing)
         self.scheduler.add_job(
             self.job_create_mega_compilations,
-            IntervalTrigger(hours=4),
+            IntervalTrigger(hours=2),
             id="create_mega_compilations",
             name="Create mega-compilations",
             replace_existing=True,
