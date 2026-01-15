@@ -254,9 +254,10 @@ class UploadRouter:
                 continue
 
             # Check minimum interval since last upload
+            # Note: last_upload_at is stored in UTC, so compare with utcnow()
             if account.last_upload_at:
                 min_interval = timedelta(minutes=MIN_UPLOAD_INTERVAL_MINUTES)
-                if datetime.now() - account.last_upload_at < min_interval:
+                if datetime.utcnow() - account.last_upload_at < min_interval:
                     continue
 
             compilation = self.db.get_compilation(upload.compilation_id)
