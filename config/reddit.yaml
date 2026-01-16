@@ -1,0 +1,93 @@
+# Reddit Story Narration Pipeline Configuration
+
+# Subreddit configurations for story discovery
+subreddits:
+  aita:
+    subreddit: "AmItheAsshole"
+    min_upvotes: 2000
+    min_words: 150
+    max_words: 400
+    sort: "hot"  # hot, top, new
+
+  tifu:
+    subreddit: "tifu"
+    min_upvotes: 3000
+    min_words: 200
+    max_words: 500
+    sort: "hot"
+
+  relationship_advice:
+    subreddit: "relationship_advice"
+    min_upvotes: 1500
+    min_words: 150
+    max_words: 450
+    sort: "hot"
+
+  pettyrevenge:
+    subreddit: "pettyrevenge"
+    min_upvotes: 1000
+    min_words: 150
+    max_words: 400
+    sort: "hot"
+
+  maliciouscompliance:
+    subreddit: "MaliciousCompliance"
+    min_upvotes: 1500
+    min_words: 200
+    max_words: 500
+    sort: "hot"
+
+# Text-to-Speech configuration
+tts:
+  # Default voice for narration
+  # Edge TTS voices: https://speech.microsoft.com/portal/voicegallery
+  default_voice: "en-US-ChristopherNeural"
+
+  # Voice options by gender
+  voices:
+    male:
+      - "en-US-ChristopherNeural"
+      - "en-US-GuyNeural"
+      - "en-US-EricNeural"
+    female:
+      - "en-US-JennyNeural"
+      - "en-US-AriaNeural"
+      - "en-US-MichelleNeural"
+
+  # Speech rate adjustment (e.g., "+10%", "-5%")
+  rate: "+0%"
+
+  # Pitch adjustment (e.g., "+5Hz", "-10Hz")
+  pitch: "+0Hz"
+
+# Video composition settings
+video:
+  # Font settings for captions
+  font_size: 48
+  font_color: "white"
+  stroke_color: "black"
+  stroke_width: 2
+
+  # Caption settings
+  words_per_caption: 4  # Words shown per caption frame
+  caption_position: "center"  # top, center, bottom
+
+  # Background video settings
+  background_blur: 0  # 0-10, blur intensity for background
+
+# Content filtering settings
+filtering:
+  # Minimum upvote ratio (0.0 - 1.0)
+  min_upvote_ratio: 0.7
+
+  # Words that will cause a post to be skipped
+  blocked_words:
+    - "nsfw"
+    - "nsfl"
+    - "gore"
+    - "death"
+    - "suicide"
+    - "self-harm"
+
+  # Require post to have body text (not just title)
+  require_body: true

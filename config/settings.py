@@ -429,6 +429,15 @@ class CategoriesConfig:
             "preferred_max": config.get("preferred_max_duration", 180),
         }
 
+    @classmethod
+    def get_talking_head_rejection(cls) -> dict:
+        """Get talking head / single-speaker rejection patterns."""
+        return cls._load().get("talking_head_rejection", {
+            "author_patterns": [],
+            "description_patterns": [],
+            "hashtags": [],
+        })
+
 
 class RedditConfig:
     """Reddit pipeline configuration loaded from YAML."""

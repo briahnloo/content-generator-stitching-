@@ -6,7 +6,9 @@ Supports both individual clip discovery and existing compilation discovery.
 
 import hashlib
 import logging
+import random
 import re
+from datetime import date
 from typing import List, Optional, Tuple
 
 from apify_client import ApifyClient
@@ -204,6 +206,38 @@ class DiscoveryService:
     # Compilation Discovery - Finding existing compilations to stitch
     # =========================================================================
 
+    def _is_talking_head_content(self, video: Video) -> bool:
+        """
+        Detect single-speaker/talking head content via metadata.
+        These videos don't work well in compilations.
+        """
+        text = f"{video.description} {' '.join(video.hashtags)}".lower()
+        author_lower = video.author.lower()
+
+        # Get rejection config
+        config = categories_config.get_talking_head_rejection()
+
+        # Check author patterns
+        for pattern in config.get("author_patterns", []):
+            if pattern.lower() in author_lower:
+                logger.debug(f"Rejected {video.id}: talking head author pattern '{pattern}'")
+                return True
+
+        # Check description patterns
+        for pattern in config.get("description_patterns", []):
+            if pattern.lower() in text:
+                logger.debug(f"Rejected {video.id}: talking head description pattern '{pattern}'")
+                return True
+
+        # Check hashtags
+        video_tags_lower = [t.lower() for t in video.hashtags]
+        for tag in config.get("hashtags", []):
+            if tag.lower() in video_tags_lower or tag.lower().lstrip("#") in [t.lstrip("#") for t in video_tags_lower]:
+                logger.debug(f"Rejected {video.id}: talking head hashtag '{tag}'")
+                return True
+
+        return False
+
     def _is_likely_compilation(self, video: Video) -> Tuple[bool, str]:
         """
         Check if a video is likely an existing compilation based on metadata.
@@ -220,8 +254,12 @@ class DiscoveryService:
         for pattern in description_patterns:
             try:
                 if re.search(pattern, text, re.IGNORECASE):
-                    # Determine compilation type
-                    if any(kw in text for kw in ["fail", "wcgw", "gone wrong"]):
+                    # Determine compilation type (check specific types before generic)
+                    if any(kw in text for kw in ["animal", "pet", "dog", "cat", "puppy", "kitten", "derp", "pets"]):
+                        return True, "animals"
+                    elif any(kw in text for kw in ["baby", "babies", "kid", "kids", "toddler", "child", "infant"]):
+                        return True, "babies"
+                    elif any(kw in text for kw in ["fail", "fails", "wcgw", "gone wrong", "instant regret", "karma"]):
                         return True, "fails"
                     elif any(kw in text for kw in ["funny", "comedy", "laugh", "hilarious"]):
                         return True, "comedy"
@@ -316,6 +354,11 @@ class DiscoveryService:
                 status=VideoStatus.DISCOVERED,
             )
 
+            # Filter out talking head / single-speaker content
+            if self._is_talking_head_content(video):
+                logger.debug(f"Skipping talking head video: {video.id}")
+                return None
+
             # Check if this is likely a compilation
             is_compilation, comp_type = self._is_likely_compilation(video)
             if is_compilation:
@@ -337,15 +380,16 @@ class DiscoveryService:
             return None
 
     def discover_compilations(
-        self, limit: int = 30, hashtags: Optional[List[str]] = None
+        self, limit: int = 30, hashtags: Optional[List[str]] = None, max_hashtags: int = 8
     ) -> Tuple[List[Video], int]:
         """
         Discover existing compilation videos on TikTok.
-        These are videos that are already compilations (multiple clips edited together).
+        Uses batched API calls for efficiency (1 call instead of N calls).
 
         Args:
             limit: Maximum number of compilations to discover
             hashtags: Optional list of hashtags to search. If None, uses config defaults.
+            max_hashtags: Maximum hashtags to search per call (rotates daily for variety)
 
         Returns:
             (new_compilations, skipped_count)
@@ -358,48 +402,53 @@ class DiscoveryService:
             logger.warning("No compilation hashtags configured")
             return [], 0
 
+        # Clean hashtags
+        clean_hashtags = [h.lstrip("#").strip() for h in hashtags]
+
+        # OPTIMIZATION: Rotate through hashtags daily for variety
+        # Use date as seed so same hashtags are used within a day (consistent results)
+        # but different hashtags on different days (variety)
+        if len(clean_hashtags) > max_hashtags:
+            seed = date.today().toordinal()
+            rng = random.Random(seed)
+            clean_hashtags = rng.sample(clean_hashtags, max_hashtags)
+            logger.info(f"Rotating hashtags: selected {max_hashtags} for today")
+
+        # OPTIMIZATION: Batch all hashtags into a single API call
+        logger.info(f"Discovering compilations from {len(clean_hashtags)} hashtags (batched): {clean_hashtags}")
+
+        run_input = {
+            "hashtags": clean_hashtags,
+            "resultsPerPage": min(limit * 3, 100),  # Fetch extra to account for filtering
+            "shouldDownloadVideos": False,
+            "shouldDownloadCovers": False,
+        }
+
+        try:
+            items = self._run_actor(run_input)
+        except Exception as e:
+            logger.error(f"Failed to discover compilations: {e}")
+            return [], 0
+
         all_compilations = []
         total_skipped = 0
-        limit_per = max(1, limit // len(hashtags))
 
-        for hashtag in hashtags:
+        for item in items:
             if len(all_compilations) >= limit:
                 break
 
-            logger.info(f"Discovering compilations for #{hashtag}")
-
-            # Clean hashtag
-            hashtag = hashtag.lstrip("#").strip()
-
-            run_input = {
-                "hashtags": [hashtag],
-                "resultsPerPage": min(limit_per * 3, 100),  # Fetch more since we filter
-                "shouldDownloadVideos": False,
-                "shouldDownloadCovers": False,
-            }
-
-            try:
-                items = self._run_actor(run_input)
-            except Exception as e:
-                logger.error(f"Failed to discover compilations for #{hashtag}: {e}")
-                continue
-
-            for item in items:
-                if len(all_compilations) >= limit:
-                    break
-
-                video = self._parse_compilation_video(item)
-                if video:
-                    if self.db.insert_video(video):
-                        all_compilations.append(video)
-                        logger.info(
-                            f"Found compilation: {video.id} - {video.compilation_type} "
-                            f"(~{video.source_clip_count} clips, {video.duration:.0f}s)"
-                        )
-                    else:
-                        total_skipped += 1
+            video = self._parse_compilation_video(item)
+            if video:
+                if self.db.insert_video(video):
+                    all_compilations.append(video)
+                    logger.info(
+                        f"Found compilation: {video.id} - {video.compilation_type} "
+                        f"(~{video.source_clip_count} clips, {video.duration:.0f}s)"
+                    )
                 else:
                     total_skipped += 1
+            else:
+                total_skipped += 1
 
         logger.info(
             f"Discovered {len(all_compilations)} compilations, skipped {total_skipped}"
@@ -419,11 +468,13 @@ class DiscoveryService:
         Returns:
             (new_compilations, skipped_count)
         """
-        # Type-specific hashtags
+        # Type-specific hashtags (trimmed for efficiency)
         type_hashtags = {
-            "fails": ["failscompilation", "epicfails", "dailyfails", "failarmy"],
-            "comedy": ["funnycompilation", "comedycompilation", "trynottolaugh", "funniestmoments"],
-            "satisfying": ["satisfyingcompilation", "oddlysatisfying", "asmrcompilation"],
+            "fails": ["failscompilation", "epicfails", "failarmy", "instantkarma"],
+            "comedy": ["funnycompilation", "trynottolaugh", "funniestmoments"],
+            "animals": ["funnyanimals", "funnypets", "animalsoftiktok"],
+            "babies": ["funnybaby", "funnykids", "babiesoftiktok"],
+            "satisfying": ["satisfyingcompilation", "oddlysatisfying"],
         }
 
         hashtags = type_hashtags.get(compilation_type, [])
@@ -431,4 +482,5 @@ class DiscoveryService:
             logger.warning(f"Unknown compilation type: {compilation_type}")
             return [], 0
 
-        return self.discover_compilations(limit=limit, hashtags=hashtags)
+        # Pass max_hashtags equal to list length to use all type-specific hashtags
+        return self.discover_compilations(limit=limit, hashtags=hashtags, max_hashtags=len(hashtags))

@@ -549,7 +549,7 @@ class GrouperService:
     def _calculate_source_score(self, v: Video) -> float:
         """Calculate ranking score for source compilation selection.
 
-        Weights engagement, quality ratio, duration, and recency.
+        Weights engagement, quality ratio, duration, recency, and content type.
         """
         # Engagement (normalized to 0-1 based on typical viral ranges)
         engagement_norm = min(v.engagement_score / 50000, 1.0)
@@ -566,12 +566,23 @@ class GrouperService:
         recency_window = settings.MEGA_RANK_RECENCY_DAYS
         recency_bonus = max(0, 1 - (days_old / recency_window))
 
+        # Content type bonus: prefer target content types (fails, animals, babies)
+        preferred_types = {
+            "fails": 0.15,
+            "animals": 0.15,
+            "babies": 0.12,
+            "comedy": 0.08,
+            "satisfying": 0.05,
+        }
+        type_bonus = preferred_types.get(v.compilation_type, 0)
+
         # Weighted combination
         score = (
             engagement_norm * settings.MEGA_RANK_ENGAGEMENT_WEIGHT
             + quality_ratio * settings.MEGA_RANK_QUALITY_WEIGHT
             - duration_penalty * settings.MEGA_RANK_DURATION_PENALTY
             + recency_bonus * settings.MEGA_RANK_RECENCY_BONUS
+            + type_bonus
         )
 
         return score

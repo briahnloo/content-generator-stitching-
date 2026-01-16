@@ -331,22 +331,28 @@ music_moods:
 # ============================================================================
 
 compilation_discovery:
-  # Hashtags that indicate existing compilation content
+  # Hashtags for compilation discovery (OPTIMIZED - top performers only)
+  # These are searched in a SINGLE batched API call
   hashtags:
-    - compilation
+    # Fails (priority)
     - failscompilation
-    - funnycompilation
-    - comedycompilation
+    - epicfails
+    - failarmy
+    - instantkarma
+    # Animals (priority)
+    - funnyanimals
+    - funnypets
+    - animalsoftiktok
+    - animalsbeingderps
+    # Babies/Kids (priority)
+    - funnybaby
+    - funnykids
+    - babiesoftiktok
+    # General compilations
     - trynottolaugh
-    - top10
-    - top5
-    - bestof
-    - bestmoments
-    - dailydose
+    - funnycompilation
     - dailyfails
     - viralcompilation
-    - epicfails
-    - funniestmoments
 
   # Regex patterns in descriptions that indicate compilation videos
   description_patterns:
@@ -379,3 +385,69 @@ compilation_discovery:
   # Quality thresholds for source compilations
   min_quality_score: 0.6
   min_estimated_clips: 3
+
+# ============================================================================
+# TALKING HEAD / SINGLE-SPEAKER REJECTION
+# Filters out videos where someone is talking to camera - doesn't work in compilations
+# ============================================================================
+
+talking_head_rejection:
+  # Author name patterns indicating talking-to-camera content
+  author_patterns:
+    - podcast
+    - talks
+    - speaks
+    - explains
+    - reacts
+    - commentary
+    - reviews
+    - opinions
+    - rants
+
+  # Description patterns indicating someone talking (regex)
+  description_patterns:
+    - 'i think'
+    - 'in my opinion'
+    - 'let me explain'
+    - 'hear me out'
+    - 'unpopular opinion'
+    - 'hot take'
+    - 'my thoughts'
+    - 'thoughts on'
+    - 'my take on'
+    - 'speaking of'
+    - 'rant about'
+    - 'ranting'
+    - 'need to talk'
+    - 'can we talk'
+    - 'talking about'
+    - 'discussing'
+    - 'my opinion on'
+    - 'here is why'
+    - 'explaining why'
+    - 'addressing'
+    - 'response to'
+    - 'reacting to'
+
+  # Hashtags that indicate talking/commentary content
+  hashtags:
+    - "#podcast"
+    - "#commentary"
+    - "#reaction"
+    - "#reactions"
+    - "#rant"
+    - "#rants"
+    - "#opinion"
+    - "#opinions"
+    - "#hottake"
+    - "#unpopularopinion"
+    - "#thoughts"
+    - "#mythoughts"
+    - "#greenscreen"
+    - "#greenscreenvideo"
+    - "#storytime"
+    - "#chatty"
+    - "#talkinghead"
+    - "#discussion"
+    - "#responding"
+    - "#reply"
